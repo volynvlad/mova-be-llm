@@ -76,6 +76,8 @@ uv sync
 ```sh
 
 python mova_be_llm/scraper.py
+# OR
+uv run python -m mova_be_llm.scraper
 
 ```
 
@@ -86,3 +88,24 @@ python mova_be_llm/scraper.py
 ./bin/extract_books.sh
 
 ```
+
+## Read / Parse book
+
+```sh
+
+# read
+uv run python examples/read_book.py
+# parse
+uv run python mova_be_llm/parse_books.py
+
+```
+
+```sh
+
+cat data/interim/*.txt > data/interim/belarusian.txt
+uv run python mova_be_llm/clean_txt.py
+uv run python mova_be_llm/train_tokenizer.py
+
+```
+
+

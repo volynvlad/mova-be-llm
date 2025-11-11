@@ -39,11 +39,18 @@ async def fetch(sem: asyncio.Semaphore, session: aiohttp.ClientSession, url: str
         sock_read=20,   
     )
     for i in range(max_retries):
+        async with session.head(url, timeout=timeout) as response:
+            total_size = int(response.headers.get("content-length", 0))
+        await asyncio.sleep(2.5)
+        filename = os.path.join(BOOKS_PATH, url.split('/')[-1])
+        existing_size = os.path.getsize(filename) if os.path.exists(filename) else 0
+        if existing_size >= total_size and total_size > 0:
+            print("File already fully downloaded.")
+            return
         try:
+            headers_continue = {"Range": f"bytes={existing_size}-"} if existing_size > 0 else {}
             async with sem:
-                async with session.get(url, timeout=timeout) as response:
-                    filename = os.path.join(BOOKS_PATH, url.split('/')[-1])
-                    total_size = int(response.headers.get("content-length", 0))
+                async with session.get(url, timeout=timeout, headers=headers_continue) as response:
                     with open(filename, "wb") as f:
                         progress = tqdm(
                             total=total_size,
@@ -69,17 +76,11 @@ async def fetch(sem: asyncio.Semaphore, session: aiohttp.ClientSession, url: str
 
 async def main():
     download_links = get_links()
-    already_downloaded = set(os.listdir("data/raw/knihi_books/"))
-    to_download = download_links - already_downloaded
-    print(
-        f"Get {len(download_links)} book links. "
-        f"Number of already downloaded files: {len(already_downloaded)}. "
-        f"To download: {len(to_download)}."
-    )
+    print(f"All links: {len(download_links)}")
 
     sem = asyncio.Semaphore(8)
     async with aiohttp.ClientSession() as session:
-        tasks = [fetch(sem, session, url) for url in to_download]
+        tasks = [fetch(sem, session, url) for url in download_links]
         results = []
         for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Fetching"):
             result = await coro
