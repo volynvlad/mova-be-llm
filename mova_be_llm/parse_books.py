@@ -1,4 +1,5 @@
 import sys
+
 """
 Book Parser - Extract text from EPUB, PDF, and DJVU files.
 
@@ -26,11 +27,10 @@ logger = get_logger(__name__)
 INPUT_DIR = "data/raw/"
 
 
-
 class BookParser:
     """Parse EPUB, PDF, and DJVU books to plain text."""
 
-    SUPPORTED_FORMATS = {'.epub', '.pdf', '.djvu'}
+    SUPPORTED_FORMATS = {".epub", ".pdf", ".djvu"}
     OUTPUT_DIR = "data/interim"
 
     def __init__(self, file_path: str):
@@ -41,11 +41,11 @@ class BookParser:
 
     def parse(self) -> str:
         """Parse the book and return cleaned text."""
-        if self.extension == '.epub':
+        if self.extension == ".epub":
             text = self._parse_epub()
-        elif self.extension == '.pdf':
+        elif self.extension == ".pdf":
             text = self._parse_pdf()
-        elif self.extension == '.djvu':
+        elif self.extension == ".djvu":
             text = self._parse_djvu()
         else:
             return ""
@@ -53,35 +53,41 @@ class BookParser:
         return self._clean_text(text)
 
     def save(self) -> str:
-        filename = str(self.file_path).split("/")[-1].removesuffix(".pdf").removesuffix(".epub").removesuffix(".djvu")
-        output_path = Path(f"{self.OUTPUT_DIR}/{filename}").with_suffix('.txt')
+        filename = (
+            str(self.file_path)
+            .split("/")[-1]
+            .removesuffix(".pdf")
+            .removesuffix(".epub")
+            .removesuffix(".djvu")
+        )
+        output_path = Path(f"{self.OUTPUT_DIR}/{filename}").with_suffix(".txt")
         try:
-            if not (text:=self.parse()):
+            if not (text := self.parse()):
                 return ""
         except Exception:
             logger.error(f"Error for {self.file_path}")
             return ""
-        output_path.write_text(text, encoding='utf-8')
+        output_path.write_text(text, encoding="utf-8")
         return str(output_path)
 
     def _parse_epub(self) -> str:
         """Extract text from EPUB file."""
-        book = epub.read_epub(str(self.file_path), options={'ignore_ncx': True})
+        book = epub.read_epub(str(self.file_path), options={"ignore_ncx": True})
         text_parts = []
 
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
                 content = item.get_content()
-                soup = BeautifulSoup(content, 'html.parser')
+                soup = BeautifulSoup(content, "html.parser")
 
-                for tag in soup(['script', 'style', 'meta', 'link', 'svg', 'img', 'figure']):
+                for tag in soup(["script", "style", "meta", "link", "svg", "img", "figure"]):
                     tag.decompose()
 
-                text = soup.get_text(separator='\n')
+                text = soup.get_text(separator="\n")
                 if text.strip():
                     text_parts.append(text)
 
-        return '\n\n'.join(text_parts)
+        return "\n\n".join(text_parts)
 
     def _parse_pdf(self) -> str:
         """Extract text from PDF file."""
@@ -98,7 +104,7 @@ class BookParser:
                         if text.strip():
                             text_parts.append(text)
 
-        return '\n'.join(text_parts)
+        return "\n".join(text_parts)
 
     def _parse_djvu(self) -> str:
         """Extract text from DJVU file."""
@@ -124,7 +130,7 @@ class BookParser:
                 # Page may not have text layer or failed to decode
                 continue
 
-        return '\n\n'.join(text_parts)
+        return "\n\n".join(text_parts)
 
     def _extract_djvu_text(self, sexpr) -> str:
         """Recursively extract text from DJVU S-expression."""
@@ -137,57 +143,56 @@ class BookParser:
                     extracted = self._extract_djvu_text(item)
                     if extracted:
                         texts.append(extracted)
-            return ' '.join(texts)
-        return ''
+            return " ".join(texts)
+        return ""
 
     def _clean_text(self, text: str) -> str:
         """Clean extracted text from artifacts and encoding issues."""
         if not text:
-            return ''
+            return ""
 
-        text = unicodedata.normalize('NFKC', text)
-        text = ''.join(
-            char for char in text
-            if unicodedata.category(char) != 'Cc' or char in '\n\t'
+        text = unicodedata.normalize("NFKC", text)
+        text = "".join(
+            char for char in text if unicodedata.category(char) != "Cc" or char in "\n\t"
         )
 
-        text = text.replace('\x00', '')
+        text = text.replace("\x00", "")
 
         mojibake_patterns = [
-            (r'Ã¢â‚¬â„¢', "'"),
+            (r"Ã¢â‚¬â„¢", "'"),
             (r'Ã¢â‚¬Å"', '"'),
-            (r'Ã¢â‚¬ï¿½', '"'),
-            (r'Ã¢â‚¬â€œ', '—'),
-            (r'Ã¢â‚¬â€˜', '–'),
-            (r'Ã‚Â', ''),
-            (r'â€™', "'"),
-            (r'â€œ', '"'),
-            (r'â€', '"'),
-            (r'â€"', '—'),
-            (r'â€"', '–'),
+            (r"Ã¢â‚¬ï¿½", '"'),
+            (r"Ã¢â‚¬â€œ", "—"),
+            (r"Ã¢â‚¬â€˜", "–"),
+            (r"Ã‚Â", ""),
+            (r"â€™", "'"),
+            (r"â€œ", '"'),
+            (r"â€", '"'),
+            (r'â€"', "—"),
+            (r'â€"', "–"),
         ]
 
         for pattern, replacement in mojibake_patterns:
             text = text.replace(pattern, replacement)
 
-        text = re.sub(r'[\x80-\x9f]+', '', text)
+        text = re.sub(r"[\x80-\x9f]+", "", text)
 
-        lines = text.split('\n')
+        lines = text.split("\n")
         cleaned_lines = []
         for line in lines:
             if line.strip():
                 letters = sum(1 for c in line if c.isalpha())
-                total = len(line.replace(' ', ''))
+                total = len(line.replace(" ", ""))
                 if total == 0 or letters / total > 0.3 or len(line) < 10:
                     cleaned_lines.append(line)
             else:
                 cleaned_lines.append(line)
 
-        text = '\n'.join(cleaned_lines)
+        text = "\n".join(cleaned_lines)
 
-        text = re.sub(r'[^\S\n]+', ' ', text)
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        text = '\n'.join(line.strip() for line in text.split('\n'))
+        text = re.sub(r"[^\S\n]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = "\n".join(line.strip() for line in text.split("\n"))
         return text.strip()
 
 
@@ -198,8 +203,8 @@ def iterate_books(input_path: str = INPUT_DIR):
                 yield os.path.join(root, file)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     for file_path in track(iterate_books(), description="Parse books"):
         parser = BookParser(file_path)
-        if (saved_path:=parser.save()):
+        if saved_path := parser.save():
             logger.debug(f"Text extracted to: {saved_path}")

@@ -106,8 +106,27 @@ uv run python mova_be_llm/parse_books.py
 
 uv run python mova_be_llm/construct_corpus.py qwen data/interim/ data/processed/qwen_belarusian_v2.txt
 uv run python mova_be_llm/clean_txt.py
-uv run python mova_be_llm/train_tokenizer.py
 
 ```
 
+# Train Tokenizer
+
+```sh
+uv run python mova_be_llm/train_belarusian_tokenizer.py \
+      --corpus data/processed/qwen_belarusian_v2.txt \
+      --output ./be_tokenizer \
+      --vocab-size 32000
+
+uv run python mova_be_llm/train_belarusian_tokenizer.py \
+      --corpus your_corpus.txt \
+      --merge Qwen/Qwen2.5-7B \
+      --output ./qwen_be \
+      --max-new-tokens 8000
+
+uv run python mova_be_llm/train_belarusian_tokenizer.py \
+      --dataset oscar \
+      --merge Qwen/Qwen2.5-7B \
+      --output ./qwen_be \
+      --max-samples 100000
+```
 
