@@ -100,9 +100,11 @@ uv run python mova_be_llm/parse_books.py
 
 ```
 
+### Construct training text corpus
+
 ```sh
 
-cat data/interim/*.txt > data/interim/belarusian.txt
+uv run python mova_be_llm/construct_corpus.py qwen data/interim/ data/processed/qwen_belarusian_v2.txt
 uv run python mova_be_llm/clean_txt.py
 uv run python mova_be_llm/train_tokenizer.py
 
