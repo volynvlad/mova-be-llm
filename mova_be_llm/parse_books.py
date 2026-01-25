@@ -1,5 +1,3 @@
-import sys
-
 """
 Book Parser - Extract text from EPUB, PDF, and DJVU files.
 
@@ -25,6 +23,20 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 INPUT_DIR = "data/raw/"
+
+MOJIBAKE_PATTERNS = [
+    (r"Ã¢â‚¬â„¢", "'"),
+    (r'Ã¢â‚¬Å"', '"'),
+    (r"Ã¢â‚¬ï¿½", '"'),
+    (r"Ã¢â‚¬â€œ", "—"),
+    (r"Ã¢â‚¬â€˜", "–"),
+    (r"Ã‚Â", ""),
+    (r"â€™", "'"),
+    (r"â€œ", '"'),
+    (r"â€", '"'),
+    (r'â€"', "—"),
+    (r'â€"', "–"),
+]
 
 
 class BookParser:
@@ -53,13 +65,7 @@ class BookParser:
         return self._clean_text(text)
 
     def save(self) -> str:
-        filename = (
-            str(self.file_path)
-            .split("/")[-1]
-            .removesuffix(".pdf")
-            .removesuffix(".epub")
-            .removesuffix(".djvu")
-        )
+        filename = str(self.file_path).split("/")[-1].removesuffix(".pdf").removesuffix(".epub").removesuffix(".djvu")
         output_path = Path(f"{self.OUTPUT_DIR}/{filename}").with_suffix(".txt")
         try:
             if not (text := self.parse()):
@@ -152,27 +158,11 @@ class BookParser:
             return ""
 
         text = unicodedata.normalize("NFKC", text)
-        text = "".join(
-            char for char in text if unicodedata.category(char) != "Cc" or char in "\n\t"
-        )
+        text = "".join(char for char in text if unicodedata.category(char) != "Cc" or char in "\n\t")
 
         text = text.replace("\x00", "")
 
-        mojibake_patterns = [
-            (r"Ã¢â‚¬â„¢", "'"),
-            (r'Ã¢â‚¬Å"', '"'),
-            (r"Ã¢â‚¬ï¿½", '"'),
-            (r"Ã¢â‚¬â€œ", "—"),
-            (r"Ã¢â‚¬â€˜", "–"),
-            (r"Ã‚Â", ""),
-            (r"â€™", "'"),
-            (r"â€œ", '"'),
-            (r"â€", '"'),
-            (r'â€"', "—"),
-            (r'â€"', "–"),
-        ]
-
-        for pattern, replacement in mojibake_patterns:
+        for pattern, replacement in MOJIBAKE_PATTERNS:
             text = text.replace(pattern, replacement)
 
         text = re.sub(r"[\x80-\x9f]+", "", text)

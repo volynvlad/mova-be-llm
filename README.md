@@ -104,29 +104,37 @@ uv run python mova_be_llm/parse_books.py
 
 ```sh
 
-uv run python mova_be_llm/construct_corpus.py qwen data/interim/ data/processed/qwen_belarusian_v2.txt
+uv run python mova_be_llm/construct_corpus.py qwen data/interim/ data/processed/qwen_belarusian.txt
 uv run python mova_be_llm/clean_txt.py
 
 ```
 
 # Train Tokenizer
 
+## Train standalone tokenizer
 ```sh
-uv run python mova_be_llm/train_belarusian_tokenizer.py \
-      --corpus data/processed/qwen_belarusian_v2.txt \
-      --output ./be_tokenizer \
-      --vocab-size 32000
+python train_belarusian_tokenizer.py --corpus data/interim --output ./be_tokenizer
+```
 
-uv run python mova_be_llm/train_belarusian_tokenizer.py \
-      --corpus your_corpus.txt \
-      --merge Qwen/Qwen2.5-7B \
-      --output ./qwen_be \
-      --max-new-tokens 8000
+```sh
+uv run python mova_be_llm/train_belarusian_tokenizer.py --corpus data/processed/qwen_belarusian_v2.txt --output ./be_tokenizer --vocab-size 32000
+```
 
-uv run python mova_be_llm/train_belarusian_tokenizer.py \
-      --dataset oscar \
-      --merge Qwen/Qwen2.5-7B \
-      --output ./qwen_be \
-      --max-samples 100000
+## Merge with Qwen2.5
+```sh
+uv run python train_belarusian_tokenizer.py --corpus corpus.txt --merge Qwen/Qwen2.5-1.5B --output ./qwen_be
+```
+
+```sh
+uv run python mova_be_llm/train_belarusian_tokenizer.py --dataset oscar --merge Qwen/Qwen2.5-7B --output ./qwen_be --max-samples 100000
+```
+
+## Download and use a Belarusian dataset
+```sh
+python train_belarusian_tokenizer.py --dataset oscar --output ./be_tokenizer
+```
+
+```sh
+uv run python mova_be_llm/train_belarusian_tokenizer.py --corpus data/interim/ --merge Qwen/Qwen2.5-7B --output ./qwen_be --max-new-tokens 8000
 ```
 

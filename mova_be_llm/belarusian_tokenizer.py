@@ -2,9 +2,17 @@ import math
 import re
 import json
 from collections import Counter
-from typing import List, Dict, Tuple, Optional, Set, Iterator
+import typing as t
 from dataclasses import dataclass, field
+from itertools import chain
 from pathlib import Path
+
+from mova_be_llm.types import TokenType
+
+LATIN_ALL = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+NUMBERS = "0123456789"
+SPECIAL_SYMBOLS = '.,!?;:\'"()-–—«»„"…'
+MAX_SUBWORD_LENGTH = 20
 
 
 class BelarusianMorphology:
@@ -242,18 +250,18 @@ class BelarusianPreTokenizer:
     def __init__(self, lowercase: bool = False):
         self.lowercase = lowercase
 
-    def pre_tokenize(self, text: str) -> List[Tuple[str, str]]:
+    def pre_tokenize(self, text: str) -> list[tuple[str, str]]:
         tokens = []
         for match in self.SPLIT_PATTERN.finditer(text):
             for name, value in match.groupdict().items():
                 if value is not None:
-                    if self.lowercase and name in ("word", "latin"):
+                    if self.lowercase and name in (TokenType.word, TokenType.latin):
                         value = value.lower()
                     tokens.append((value, name))
                     break
         return tokens
 
-    def tokenize(self, text: str) -> List[str]:
+    def tokenize(self, text: str) -> list[str]:
         return [token for token, _ in self.pre_tokenize(text)]
 
 
@@ -265,7 +273,17 @@ class MorphologicalTokenizer:
         self.suffixes = sorted(self.morphology.SUFFIXES, key=len, reverse=True)
         self.endings = sorted(self.morphology.ENDINGS, key=len, reverse=True)
 
-    def segment(self, word: str) -> Dict[str, str]:
+    def segment(self, word: str) -> dict[str, str]:
+        """
+        Parameters: word: str.
+        Return dict[str, str].
+        {
+            "prefix": "<prefix>",
+            "root": "<root>",
+            "suffix": "<suffix>",
+            "ending": "<ending>",
+        }
+        """
         original = word
         word_lower = word.lower()
 
@@ -275,9 +293,8 @@ class MorphologicalTokenizer:
         if match and match.group("root"):
             groups = match.groupdict()
             start = len(groups["prefix"])
-            end = start + len(groups["root"])
             result["prefix"] = original[:start]
-            result["root"] = original[start:end]
+            result["root"] = original[start : start + len(groups["root"])]
             result["suffix"] = groups["suffix"]
             result["ending"] = groups["ending"]
             return result
@@ -308,7 +325,7 @@ class MorphologicalTokenizer:
         result["root"] = original[pos:root_end] if root_end > pos else original[pos:]
         return result
 
-    def segment_to_tokens(self, word: str, mark_boundaries: bool = True) -> List[str]:
+    def segment_to_tokens(self, word: str, mark_boundaries: bool = True) -> list[str]:
         segments = self.segment(word)
         tokens = []
 
@@ -331,7 +348,7 @@ class MorphologicalTokenizer:
 class BPEConfig:
     vocab_size: int = 32000
     min_frequency: int = 2
-    special_tokens: List[str] = field(
+    special_tokens: list[str] = field(
         default_factory=lambda: [
             "<pad>",
             "<unk>",
@@ -350,37 +367,28 @@ class BPEConfig:
 
 
 class BelarusianBPETokenizer:
-    def __init__(self, config: Optional[BPEConfig] = None):
+    def __init__(self, config: BPEConfig | None = None):
         self.config = config or BPEConfig()
         self.pre_tokenizer = BelarusianPreTokenizer(lowercase=self.config.lowercase)
         self.morphological = MorphologicalTokenizer()
 
-        self.token_to_id: Dict[str, int] = {}
-        self.id_to_token: Dict[int, str] = {}
-        self.merges: List[Tuple[str, str]] = []
-        self.merge_ranks: Dict[Tuple[str, str], int] = {}
+        self.token_to_id: dict[str, int] = {}
+        self.id_to_token: dict[int, str] = {}
+        self.merges: list[tuple[str, str]] = []
+        self.merge_ranks: dict[tuple[str, str], int] = {}
 
         self._init_special_tokens()
 
-        self._cache: Dict[str, List[str]] = {}
-        self._cache_max_size = 100000
+        self._cache: dict[str, list[str]] = {}
+        self._cache_max_size = 100_000
 
     def _init_special_tokens(self):
         for i, token in enumerate(self.config.special_tokens):
             self.token_to_id[token] = i
             self.id_to_token[i] = token
 
-    def _get_base_vocab(self) -> Set[str]:
-        vocab = set()
-
-        for char in BelarusianMorphology.CYRILLIC_ALL:
-            vocab.add(char)
-
-        for char in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
-            vocab.add(char)
-
-        for char in '.,!?;:\'"()-–—«»„"…':
-            vocab.add(char)
+    def _get_base_vocab(self) -> set[str]:
+        vocab = set(chain(BelarusianMorphology.CYRILLIC_ALL, LATIN_ALL, NUMBERS, SPECIAL_SYMBOLS))
 
         if self.config.use_morphology:
             morph = BelarusianMorphology()
@@ -392,7 +400,10 @@ class BelarusianBPETokenizer:
                 vocab.add(f"▪{ending}")
         return vocab
 
-    def _word_to_chars(self, word: str) -> List[str]:
+    def _word_to_chars(self, word: str) -> list[str]:
+        if not word:
+            return []
+
         if self.config.use_morphology:
             segments = self.morphological.segment(word)
             chars = []
@@ -415,20 +426,23 @@ class BelarusianBPETokenizer:
 
             return chars if chars else list(word)
 
-        if not word:
-            return []
-        chars = [word[0]]
-        for c in word[1:]:
-            chars.append(f"{self.config.continuing_subword_prefix}{c}")
-        return chars
+        return [word[0], *(f"{self.config.continuing_subword_prefix}{c}" for c in word[1:])]
 
-    def _get_pairs(self, tokens: List[str]) -> Counter:
+    def _get_pairs(self, tokens: list[str]) -> Counter:
         pairs = Counter()
         for i in range(len(tokens) - 1):
             pairs[(tokens[i], tokens[i + 1])] += 1
         return pairs
 
-    def _merge_pair(self, tokens: List[str], pair: Tuple[str, str]) -> List[str]:
+    def _get_word_freq(self, texts: t.Iterator[str]) -> Counter:
+        word_freqs = Counter()
+        for text in texts:
+            for token, token_type in self.pre_tokenizer.pre_tokenize(text):
+                if token_type == TokenType.word:
+                    word_freqs[token] += 1
+        return word_freqs
+
+    def _merge_pair(self, tokens: list[str], pair: tuple[str, str]) -> list[str]:
         merged = pair[0] + pair[1].lstrip(self.config.continuing_subword_prefix)
         result = []
         i = 0
@@ -441,57 +455,53 @@ class BelarusianBPETokenizer:
                 i += 1
         return result
 
-    def train(self, texts: Iterator[str], progress_callback=None):
-        word_freqs: Counter = Counter()
+    def _build_vocab(self, vocab: set[str]):
+        idx = len(self.config.special_tokens)
+        for token in sorted(vocab):
+            if token not in self.token_to_id:
+                self.token_to_id[token] = idx
+                self.id_to_token[idx] = token
+                idx += 1
 
-        for text in texts:
-            tokens = self.pre_tokenizer.pre_tokenize(text)
-            for token, token_type in tokens:
-                if token_type == "word":
-                    word_freqs[token] += 1
+        self.merge_ranks = {merge: i for i, merge in enumerate(self.merges)}
 
-        word_splits: Dict[str, List[str]] = {}
-        for word in word_freqs:
-            word_splits[word] = self._word_to_chars(word)
+    def _get_best_pair_freq(self, pair_freqs: Counter) -> tuple[tuple[str, str] | None, int | float]:
+        best_pair = None
+        best_freq = self.config.min_frequency - 1
+        for pair, freq in pair_freqs.items():
+            if freq > best_freq:
+                if self.config.use_morphology and (
+                    pair[0].startswith("▸")
+                    or pair[0].startswith("◂")
+                    or pair[0].startswith("▪")
+                    or pair[1].startswith("▸")
+                    or pair[1].startswith("◂")
+                    or pair[1].startswith("▪")
+                ):
+                    freq *= 1 + self.config.morpheme_boundary_bonus
 
+                if freq > best_freq:
+                    best_freq = freq
+                    best_pair = pair
+        return best_pair, best_freq
+
+    def train(self, texts: t.Iterator[str], progress_callback=None):
+        word_freqs = self._get_word_freq(texts)
+        word_splits: dict[str, list[str]] = {word: self._word_to_chars(word) for word in word_freqs}
         vocab = self._get_base_vocab()
         for word, chars in word_splits.items():
             vocab.update(chars)
 
         target_size = self.config.vocab_size - len(self.config.special_tokens)
-
         while len(vocab) < target_size:
             pair_freqs: Counter = Counter()
             for word, chars in word_splits.items():
-                freq = word_freqs[word]
                 for i in range(len(chars) - 1):
-                    pair = (chars[i], chars[i + 1])
-                    pair_freqs[pair] += freq
-
+                    pair_freqs[(chars[i], chars[i + 1])] += word_freqs[word]
             if not pair_freqs:
                 break
 
-            best_pair = None
-            best_freq = self.config.min_frequency - 1
-
-            for pair, freq in pair_freqs.items():
-                if freq > best_freq:
-                    effective_freq = freq
-                    if self.config.use_morphology:
-                        if (
-                            pair[0].startswith("▸")
-                            or pair[0].startswith("◂")
-                            or pair[0].startswith("▪")
-                            or pair[1].startswith("▸")
-                            or pair[1].startswith("◂")
-                            or pair[1].startswith("▪")
-                        ):
-                            effective_freq *= 1 + self.config.morpheme_boundary_bonus
-
-                    if effective_freq > best_freq:
-                        best_freq = freq
-                        best_pair = pair
-
+            best_pair, best_freq = self._get_best_pair_freq(pair_freqs)
             if best_pair is None or best_freq < self.config.min_frequency:
                 break
 
@@ -507,24 +517,10 @@ class BelarusianBPETokenizer:
 
         self._build_vocab(vocab)
 
-    def _build_vocab(self, vocab: Set[str]):
-        idx = len(self.config.special_tokens)
-
-        for token in sorted(vocab):
-            if token not in self.token_to_id:
-                self.token_to_id[token] = idx
-                self.id_to_token[idx] = token
-                idx += 1
-
-        self.merge_ranks = {merge: i for i, merge in enumerate(self.merges)}
-
-    def _apply_bpe(self, word: str) -> List[str]:
-        """Apply BPE to a single word."""
+    def _apply_bpe(self, word: str) -> list[str]:
         if word in self._cache:
             return self._cache[word]
-
         tokens = self._word_to_chars(word)
-
         if len(tokens) <= 1:
             return tokens
 
@@ -533,8 +529,7 @@ class BelarusianBPETokenizer:
             best_rank = float("inf")
 
             for i in range(len(tokens) - 1):
-                pair = (tokens[i], tokens[i + 1])
-                if pair in self.merge_ranks:
+                if (pair := (tokens[i], tokens[i + 1])) in self.merge_ranks:
                     rank = self.merge_ranks[pair]
                     if rank < best_rank:
                         best_rank = rank
@@ -550,47 +545,24 @@ class BelarusianBPETokenizer:
 
         return tokens
 
-    def tokenize(self, text: str) -> List[str]:
-        """
-        Tokenize text into subword tokens.
-
-        Args:
-            text: Input text
-
-        Returns:
-            List of subword tokens
-        """
+    def tokenize(self, text: str) -> list[str]:
         result = []
-        pre_tokens = self.pre_tokenizer.pre_tokenize(text)
-
-        for token, token_type in pre_tokens:
-            if token_type == "word":
+        for token, token_type in self.pre_tokenizer.pre_tokenize(text):
+            if token_type == TokenType.word:
                 result.extend(self._apply_bpe(token))
-            elif token_type == "latin":
+            elif token_type == TokenType.latin:
                 result.extend(self._apply_bpe(token))
-            elif token_type == "number":
+            elif token_type == TokenType.number:
                 result.append(token)
-            elif token_type == "space":
-                if token == "\n":
-                    result.append("<nl>")
-            elif token_type == "punct":
+            elif token_type == TokenType.space and token == "\n":
+                result.append("<nl>")
+            elif token_type == TokenType.punct:
                 result.append(token)
-            elif token_type in ("url", "email"):
+            elif token_type in (TokenType.url, TokenType.email):
                 result.append(token)
-
         return result
 
-    def encode(self, text: str, add_special_tokens: bool = True) -> List[int]:
-        """
-        Encode text to token IDs.
-
-        Args:
-            text: Input text
-            add_special_tokens: Whether to add BOS/EOS tokens
-
-        Returns:
-            List of token IDs
-        """
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         tokens = self.tokenize(text)
 
         ids = []
@@ -606,28 +578,14 @@ class BelarusianBPETokenizer:
 
         return ids
 
-    def decode(self, ids: List[int], skip_special_tokens: bool = True) -> str:
-        """
-        Decode token IDs back to text.
-
-        Args:
-            ids: List of token IDs
-            skip_special_tokens: Whether to skip special tokens
-
-        Returns:
-            Decoded text string
-        """
+    def decode(self, ids: list[int], skip_special_tokens: bool = True) -> str:
         tokens = []
-        special = set(self.config.special_tokens)
-
         for id_ in ids:
             token = self.id_to_token.get(id_, "<unk>")
-            if skip_special_tokens and token in special:
-                continue
-            tokens.append(token)
+            if not (skip_special_tokens and token in set(self.config.special_tokens)):
+                tokens.append(token)
 
         def strip_markers(s: str) -> str:
-            """Remove all morpheme boundary markers."""
             return s.replace("▸", "").replace("◂", "").replace("▪", "")
 
         result = []
@@ -641,13 +599,12 @@ class BelarusianBPETokenizer:
                 clean = strip_markers(token)
                 if result and clean:
                     prev = result[-1]
-                    needs_space = (
+                    if (
                         prev
                         and prev[-1].isalnum()
                         and clean[0].isalnum()
                         and not prev.endswith(("-", "'", "(", "[", "{", "«", '"'))
-                    )
-                    if needs_space:
+                    ):
                         result.append(" ")
                 result.append(clean)
 
@@ -658,11 +615,8 @@ class BelarusianBPETokenizer:
         """Return vocabulary size."""
         return len(self.token_to_id)
 
-    def save(self, path: str):
-        """Save tokenizer to directory."""
-        path = Path(path)
+    def save(self, path: Path):
         path.mkdir(parents=True, exist_ok=True)
-
         config_dict = {
             "vocab_size": self.config.vocab_size,
             "min_frequency": self.config.min_frequency,
@@ -683,10 +637,7 @@ class BelarusianBPETokenizer:
             f.write("\n".join(merges_str))
 
     @classmethod
-    def load(cls, path: str) -> "BelarusianBPETokenizer":
-        """Load tokenizer from directory."""
-        path = Path(path)
-
+    def load(cls, path: Path) -> "BelarusianBPETokenizer":
         with open(path / "config.json", "r", encoding="utf-8") as f:
             config_dict = json.load(f)
         config = BPEConfig(**config_dict)
@@ -710,14 +661,14 @@ class BelarusianBPETokenizer:
 
 
 class BelarusianUnigramTokenizer:
-    def __init__(self, config: Optional[BPEConfig] = None):
+    def __init__(self, config: BPEConfig | None = None):
         self.config = config or BPEConfig()
         self.pre_tokenizer = BelarusianPreTokenizer(lowercase=self.config.lowercase)
         self.morphological = MorphologicalTokenizer()
 
-        self.token_to_id: Dict[str, int] = {}
-        self.id_to_token: Dict[int, str] = {}
-        self.token_scores: Dict[str, float] = {}
+        self.token_to_id: dict[str, int] = {}
+        self.id_to_token: dict[int, str] = {}
+        self.token_scores: dict[str, float] = {}
 
         self._init_special_tokens()
 
@@ -727,13 +678,11 @@ class BelarusianUnigramTokenizer:
             self.id_to_token[i] = token
             self.token_scores[token] = 0.0
 
-    def _viterbi_segment(self, word: str) -> List[str]:
+    def _viterbi_segment(self, word: str) -> list[str]:
         n = len(word)
         if n == 0:
             return []
 
-        # best_score[i] = best score to reach position i
-        # best_prev[i] = position from which we reached i with best score
         best_score = [float("-inf")] * (n + 1)
         best_prev = [-1] * (n + 1)
         best_score[0] = 0.0
@@ -742,29 +691,19 @@ class BelarusianUnigramTokenizer:
             if best_score[i] == float("-inf"):
                 continue
 
-            # Try all possible subwords starting at position i
-            for j in range(i + 1, min(i + 20, n + 1)):  # max subword length 20
+            for j in range(i + 1, min(i + MAX_SUBWORD_LENGTH, n + 1)):
                 subword = word[i:j]
-
-                # Get score (use small penalty for unknown)
-                if subword in self.token_scores:
-                    score = self.token_scores[subword]
-                else:
-                    # Unknown token penalty
-                    score = -10.0 - len(subword)
-
+                score = self.token_scores[subword] if subword in self.token_scores else -10.0 - len(subword)
                 total_score = best_score[i] + score
                 if total_score > best_score[j]:
                     best_score[j] = total_score
                     best_prev[j] = i
 
-        # Backtrack to find segmentation
         segments = []
         pos = n
         while pos > 0:
             prev = best_prev[pos]
             if prev == -1:
-                # Fallback: single character
                 segments.append(word[pos - 1 : pos])
                 pos -= 1
             else:
@@ -774,14 +713,14 @@ class BelarusianUnigramTokenizer:
         segments.reverse()
         return segments
 
-    def train(self, texts: Iterator[str], progress_callback=None):
+    def train(self, texts: t.Iterator[str], progress_callback=None):
         substring_freqs: Counter = Counter()
         total_words = 0
 
         for text in texts:
             tokens = self.pre_tokenizer.pre_tokenize(text)
             for token, token_type in tokens:
-                if token_type == "word":
+                if token_type == TokenType.word:
                     total_words += 1
                     word = token.lower() if self.config.lowercase else token
                     n = len(word)
@@ -826,11 +765,7 @@ class BelarusianUnigramTokenizer:
         while len(self.token_scores) > target_size:
             # Remove lowest-scoring tokens (that don't break segmentation too badly)
             sorted_tokens = sorted(
-                [
-                    (t, s)
-                    for t, s in self.token_scores.items()
-                    if t not in self.config.special_tokens and len(t) > 1
-                ],
+                [(t, s) for t, s in self.token_scores.items() if t not in self.config.special_tokens and len(t) > 1],
                 key=lambda x: x[1],
             )
 
@@ -854,33 +789,24 @@ class BelarusianUnigramTokenizer:
                 self.id_to_token[idx] = token
                 idx += 1
 
-    def tokenize(self, text: str) -> List[str]:
-        """Tokenize text using Unigram model."""
+    def tokenize(self, text: str) -> list[str]:
         result = []
         pre_tokens = self.pre_tokenizer.pre_tokenize(text)
-
         for token, token_type in pre_tokens:
-            if token_type == "word":
+            if token_type == TokenType.word:
                 word = token.lower() if self.config.lowercase else token
                 segments = self._viterbi_segment(word)
                 result.extend(segments)
-            elif token_type == "latin":
+            elif token_type == TokenType.latin:
                 segments = self._viterbi_segment(token)
                 result.extend(segments)
-            elif token_type == "number":
-                result.append(token)
-            elif token_type == "space":
-                if token == "\n":
-                    result.append("<nl>")
-            elif token_type == "punct":
-                result.append(token)
+            elif token_type == TokenType.space and token == "\n":
+                result.append("<nl>")
             else:
                 result.append(token)
-
         return result
 
-    def encode(self, text: str, add_special_tokens: bool = True) -> List[int]:
-        """Encode text to IDs."""
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         tokens = self.tokenize(text)
         ids = []
 
@@ -893,11 +819,9 @@ class BelarusianUnigramTokenizer:
 
         if add_special_tokens:
             ids.append(self.token_to_id["<eos>"])
-
         return ids
 
-    def decode(self, ids: List[int], skip_special_tokens: bool = True) -> str:
-        """Decode IDs to text."""
+    def decode(self, ids: list[int], skip_special_tokens: bool = True) -> str:
         tokens = []
         special = set(self.config.special_tokens)
 
@@ -906,43 +830,36 @@ class BelarusianUnigramTokenizer:
             if skip_special_tokens and token in special:
                 continue
             tokens.append(token)
-
-        # Simple join (Unigram doesn't use continuation markers)
         return "".join(tokens).replace("<nl>", "\n")
 
     @property
     def vocab_size(self) -> int:
         return len(self.token_to_id)
 
-
-# =============================================================================
-# Complete Tokenizer Interface
-# =============================================================================
+    def save(self, path: Path):
+        path.mkdir(parents=True, exist_ok=True)
+        with open(path / "config.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "algorithm": "unigram",
+                    "vocab_size": self.config.vocab_size,
+                    "use_morphology": self.config.use_morphology,
+                    "lowercase": self.config.lowercase,
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
 
 
 class BelarusianTokenizer:
-    """
-    High-level tokenizer interface combining all components.
-
-    This is the main class to use for tokenizing Belarusian text.
-    """
-
     def __init__(
         self,
         vocab_size: int = 32000,
-        algorithm: str = "bpe",  # 'bpe' or 'unigram'
+        algorithm: str = "bpe",
         use_morphology: bool = True,
         lowercase: bool = False,
     ):
-        """
-        Initialize Belarusian tokenizer.
-
-        Args:
-            vocab_size: Target vocabulary size
-            algorithm: 'bpe' or 'unigram'
-            use_morphology: Use morphological awareness
-            lowercase: Convert text to lowercase
-        """
         self.config = BPEConfig(
             vocab_size=vocab_size,
             use_morphology=use_morphology,
@@ -954,68 +871,42 @@ class BelarusianTokenizer:
         elif algorithm == "unigram":
             self._tokenizer = BelarusianUnigramTokenizer(self.config)
         else:
-            raise ValueError(f"Unknown algorithm: {algorithm}")
+            raise ValueError(f"Unknown algorithm: {algorithm}. Support bpe and unigram.")
 
         self.algorithm = algorithm
         self.pre_tokenizer = BelarusianPreTokenizer(lowercase=lowercase)
         self.morphological = MorphologicalTokenizer()
 
-    def train(self, texts: Iterator[str], progress_callback=None):
-        """Train tokenizer on corpus."""
+    def train(self, texts: t.Iterator[str], progress_callback=None):
         self._tokenizer.train(texts, progress_callback)
 
-    def tokenize(self, text: str) -> List[str]:
-        """Tokenize text into subword tokens."""
+    def tokenize(self, text: str) -> list[str]:
         return self._tokenizer.tokenize(text)
 
-    def encode(self, text: str, add_special_tokens: bool = True) -> List[int]:
-        """Encode text to token IDs."""
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         return self._tokenizer.encode(text, add_special_tokens)
 
-    def decode(self, ids: List[int], skip_special_tokens: bool = True) -> str:
-        """Decode token IDs to text."""
+    def decode(self, ids: list[int], skip_special_tokens: bool = True) -> str:
         return self._tokenizer.decode(ids, skip_special_tokens)
 
-    def segment_morphemes(self, word: str) -> Dict[str, str]:
-        """Segment word into morphemes (prefix, root, suffix, ending)."""
+    def segment_morphemes(self, word: str) -> dict[str, str]:
         return self.morphological.segment(word)
 
     @property
     def vocab_size(self) -> int:
-        """Current vocabulary size."""
         return self._tokenizer.vocab_size
 
     @property
-    def vocab(self) -> Dict[str, int]:
-        """Vocabulary mapping."""
+    def vocab(self) -> dict[str, int]:
         return self._tokenizer.token_to_id.copy()
 
-    def save(self, path: str):
-        """Save tokenizer to directory."""
-        if hasattr(self._tokenizer, "save"):
-            self._tokenizer.save(path)
-        else:
-            # Save basic info
-            path = Path(path)
-            path.mkdir(parents=True, exist_ok=True)
-
-            with open(path / "config.json", "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "algorithm": self.algorithm,
-                        "vocab_size": self.config.vocab_size,
-                        "use_morphology": self.config.use_morphology,
-                        "lowercase": self.config.lowercase,
-                    },
-                    f,
-                    ensure_ascii=False,
-                    indent=2,
-                )
+    def save(self, path: Path):
+        self._tokenizer.save(path)
 
     @classmethod
-    def load(cls, path: str) -> "BelarusianTokenizer":
+    def load(cls, path_s: str) -> "BelarusianTokenizer":
         """Load tokenizer from directory."""
-        path = Path(path)
+        path = Path(path_s)
 
         with open(path / "config.json", "r", encoding="utf-8") as f:
             config = json.load(f)

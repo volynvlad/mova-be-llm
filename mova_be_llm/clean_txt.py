@@ -25,4 +25,4 @@ def clean_file(inp: str, out: str) -> None:
 
 
 if __name__ == "__main__":
-    clean_file("data/interim/belarusian.txt", "data/processed/belarusian_cleaned_v2.txt")
+    clean_file("data/interim/belarusian.txt", "data/processed/belarusian_cleaned.txt")
