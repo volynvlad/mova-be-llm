@@ -15,14 +15,10 @@ from mova_be_llm.loader import (
     load_text_file,
 )
 from mova_be_llm.merge_tokenizers import TokenizerMerger
-from mova_be_llm.types import MergeConfig
+from mova_be_llm.types import DEFAULT_MAX_NEW_TOKENS, DEFAULT_VOCAB_SIZE, MergeConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-DEFAULT_VOCAB_SIZE = 32000
-DEFAULT_MAX_NEW_TOKENS = 8000
-DEFAULT_MIN_FREQUENCY = 5
 
 
 def train_standalone_tokenizer(
@@ -72,13 +68,7 @@ def train_standalone_tokenizer(
     return tokenizer
 
 
-def train_and_merge_with_base(
-    corpus: t.Iterator[str],
-    base_model: str,
-    output_path: str,
-    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
-    min_frequency: int = DEFAULT_MIN_FREQUENCY,
-) -> None:
+def train_and_merge_with_base(corpus: t.Iterator[str], output_path: str, base_model: str, config: MergeConfig) -> None:
     """
     Train Belarusian tokens and merge with a base model tokenizer.
     """
@@ -86,7 +76,6 @@ def train_and_merge_with_base(
     logger.info(f"Merging with base model: {base_model}")
 
     merger = TokenizerMerger(base_model)
-    config = MergeConfig(max_new_tokens=max_new_tokens, min_frequency=min_frequency, prioritize_morphemes=True)
 
     tokenizer = merger.merge_from_corpus(list(corpus), output_path, config)
 
@@ -126,7 +115,7 @@ def main():
     )
     parser.add_argument("--no-morphology", action="store_true", help="Disable morphological awareness")
 
-    parser.add_argument("--merge", type=str, help="Base model to merge with (e.g., 'Qwen/Qwen2.5-1.5B')")
+    parser.add_argument("--merge-model", type=str, help="Base model to merge with (e.g., 'Qwen/Qwen2.5-1.5B')")
     parser.add_argument(
         "--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS, help="Maximum new tokens to add when merging"
     )
@@ -159,13 +148,10 @@ def main():
         logger.error("Please provide --corpus or --dataset")
         return
 
-    if args.merge:
-        train_and_merge_with_base(
-            corpus,
-            base_model=args.merge,
-            output_path=args.output,
-            max_new_tokens=args.max_new_tokens,
-        )
+
+    config = MergeConfig(max_new_tokens=args.max_new_tokens, prioritize_morphemes=True)
+    if args.merge_model:
+        train_and_merge_with_base(corpus, args.output, args.merge_model, config)
     else:
         train_standalone_tokenizer(
             corpus,

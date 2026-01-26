@@ -12,10 +12,14 @@ class TokenType(StrEnum):
     email = "email"
 
 
+DEFAULT_MAX_NEW_TOKENS = 8000
+DEFAULT_MIN_FREQUENCY = 5
+DEFAULT_VOCAB_SIZE = 32000
+
 @dataclass
 class MergeConfig:
-    max_new_tokens: int = 8000
-    min_frequency: int = 10
+    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS
+    min_frequency: int = DEFAULT_MIN_FREQUENCY
     prioritize_morphemes: bool = True
     skip_existing: bool = True
     belarusian_token_prefix: str = ""

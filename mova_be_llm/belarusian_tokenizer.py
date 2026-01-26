@@ -15,6 +15,18 @@ SPECIAL_SYMBOLS = '.,!?;:\'"()-–—«»„"…'
 MAX_SUBWORD_LENGTH = 20
 
 
+def bytes_to_unicode() -> dict[int, str]:
+    bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+    cs = bs[:]
+    n = 0
+    for b in range(2**8):
+        if b not in bs:
+            bs.append(b)
+            cs.append(2**8 + n)
+            n += 1
+    return dict(zip(bs, [chr(c) for c in cs]))
+
+
 class BelarusianMorphology:
     PREFIXES = [
         # Sorted by length (longest first) for greedy matching
@@ -203,6 +215,44 @@ class BelarusianMorphology:
         "ў",
     ]
 
+    CYRILLIC_CAPITAL_MERGES = [
+        ("Ð", "Ĳ"),  # А
+        ("Ð", "ĳ"),  # Б
+        ("Ð", "Ĵ"),  # В
+        ("Ð", "ĵ"),  # Г
+        ("Ð", "Ķ"),  # Д
+        ("Ð", "ķ"),  # Е
+        ("Ð", "ĸ"),  # Ж
+        ("Ð", "Ĺ"),  # З
+        ("Ð", "ĺ"),  # И
+        ("Ð", "Ļ"),  # Й
+        ("Ð", "ļ"),  # К
+        ("Ð", "Ľ"),  # Л
+        ("Ð", "ľ"),  # М
+        ("Ð", "Ŀ"),  # Н
+        ("Ð", "ŀ"),  # О
+        ("Ð", "Ł"),  # П
+        ("Ð", "ł"),  # Р
+        ("Ð", "¡"),  # С
+        ("Ð", "¢"),  # Т
+        ("Ð", "£"),  # У
+        ("Ð", "¤"),  # Ф
+        ("Ð", "¥"),  # Х
+        ("Ð", "¦"),  # Ц
+        ("Ð", "§"),  # Ч
+        ("Ð", "¨"),  # Ш
+        ("Ð", "©"),  # Щ
+        ("Ð", "ª"),  # Ъ
+        ("Ð", "«"),  # Ы
+        ("Ð", "¬"),  # Ь
+        ("Ð", "Ń"),  # Э
+        ("Ð", "®"),  # Ю
+        ("Ð", "¯"),  # Я
+        ("Ð", "ģ"),  # Ё
+        ("Ð", "Ĩ"),  # І
+        ("Ð", "İ"),  # Ў
+    ]
+
     CYRILLIC_LOWER = "абвгдеёжзійклмнопрстуўфхцчшыьэюя"
     CYRILLIC_UPPER = "АБВГДЕЁЖЗІЙКЛМНОПРСТУЎФХЦЧШЫЬЭЮЯ"
     CYRILLIC_ALL = CYRILLIC_LOWER + CYRILLIC_UPPER
@@ -374,8 +424,8 @@ class BelarusianBPETokenizer:
 
         self.token_to_id: dict[str, int] = {}
         self.id_to_token: dict[int, str] = {}
-        self.merges: list[tuple[str, str]] = []
-        self.merge_ranks: dict[tuple[str, str], int] = {}
+        self.merges: list[tuple[str, str]] = []  # self.morphological.morphology.CYRILLIC_CAPITAL_MERGES
+        self.merge_ranks: dict[tuple[str, str], int] = {}  # {merge: i for i, merge in enumerate(reversed(self.merges))}
 
         self._init_special_tokens()
 
@@ -388,15 +438,22 @@ class BelarusianBPETokenizer:
             self.id_to_token[i] = token
 
     def _get_base_vocab(self) -> set[str]:
-        vocab = set(chain(BelarusianMorphology.CYRILLIC_ALL, LATIN_ALL, NUMBERS, SPECIAL_SYMBOLS))
-
+        vocab = set(
+            chain(
+                BelarusianMorphology.CYRILLIC_ALL,
+                LATIN_ALL,
+                NUMBERS,
+                SPECIAL_SYMBOLS,
+                chain(*self.morphological.morphology.CYRILLIC_CAPITAL_MERGES),
+            )
+        )
         if self.config.use_morphology:
             morph = BelarusianMorphology()
-            for prefix in morph.PREFIXES[:15]:
+            for prefix in morph.PREFIXES:
                 vocab.add(f"▸{prefix}")
-            for suffix in morph.SUFFIXES[:20]:
+            for suffix in morph.SUFFIXES:
                 vocab.add(f"◂{suffix}")
-            for ending in morph.ENDINGS[:25]:
+            for ending in morph.ENDINGS:
                 vocab.add(f"▪{ending}")
         return vocab
 
@@ -462,8 +519,7 @@ class BelarusianBPETokenizer:
                 self.token_to_id[token] = idx
                 self.id_to_token[idx] = token
                 idx += 1
-
-        self.merge_ranks = {merge: i for i, merge in enumerate(self.merges)}
+        self.merge_ranks = self.merge_ranks | {merge: i for i, merge in enumerate(self.merges)}
 
     def _get_best_pair_freq(self, pair_freqs: Counter) -> tuple[tuple[str, str] | None, int | float]:
         best_pair = None
@@ -488,13 +544,11 @@ class BelarusianBPETokenizer:
     def train(self, texts: t.Iterator[str], progress_callback=None):
         word_freqs = self._get_word_freq(texts)
         word_splits: dict[str, list[str]] = {word: self._word_to_chars(word) for word in word_freqs}
-        vocab = self._get_base_vocab()
-        for word, chars in word_splits.items():
-            vocab.update(chars)
+        vocab = self._get_base_vocab() | set(chain(*word_splits.values()))
 
         target_size = self.config.vocab_size - len(self.config.special_tokens)
         while len(vocab) < target_size:
-            pair_freqs: Counter = Counter()
+            pair_freqs = Counter()
             for word, chars in word_splits.items():
                 for i in range(len(chars) - 1):
                     pair_freqs[(chars[i], chars[i + 1])] += word_freqs[word]
@@ -626,7 +680,7 @@ class BelarusianBPETokenizer:
             "lowercase": self.config.lowercase,
             "continuing_subword_prefix": self.config.continuing_subword_prefix,
         }
-        with open(path / "config.json", "w", encoding="utf-8") as f:
+        with open(path / "tokenizer_config.json", "w", encoding="utf-8") as f:
             json.dump(config_dict, f, ensure_ascii=False, indent=2)
 
         with open(path / "vocab.json", "w", encoding="utf-8") as f:
@@ -638,7 +692,7 @@ class BelarusianBPETokenizer:
 
     @classmethod
     def load(cls, path: Path) -> "BelarusianBPETokenizer":
-        with open(path / "config.json", "r", encoding="utf-8") as f:
+        with open(path / "tokenizer_config.json", "r", encoding="utf-8") as f:
             config_dict = json.load(f)
         config = BPEConfig(**config_dict)
 
@@ -649,9 +703,8 @@ class BelarusianBPETokenizer:
         tokenizer.id_to_token = {v: k for k, v in tokenizer.token_to_id.items()}
 
         with open(path / "merges.txt", "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
+            for f_line in f:
+                if (line:=f_line.strip()):
                     parts = line.split(" ", 1)
                     if len(parts) == 2:
                         tokenizer.merges.append((parts[0], parts[1]))
@@ -838,7 +891,7 @@ class BelarusianUnigramTokenizer:
 
     def save(self, path: Path):
         path.mkdir(parents=True, exist_ok=True)
-        with open(path / "config.json", "w", encoding="utf-8") as f:
+        with open(path / "tokenizer_config.json", "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "algorithm": "unigram",
@@ -908,7 +961,7 @@ class BelarusianTokenizer:
         """Load tokenizer from directory."""
         path = Path(path_s)
 
-        with open(path / "config.json", "r", encoding="utf-8") as f:
+        with open(path / "tokenizer_config.json", "r", encoding="utf-8") as f:
             config = json.load(f)
 
         tokenizer = cls(

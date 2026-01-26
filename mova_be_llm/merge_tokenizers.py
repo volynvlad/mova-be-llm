@@ -78,7 +78,10 @@ class BelarusianTokenExtractor:
                     freq *= 2.5
                 elif token in endings:
                     freq *= 2.0
-                if "ў" in token or "і" in token or "ё" in token:
+                if (
+                    "ў" in token or "і" in token or "ё" in token 
+                    or "Ў" in token or "І" in token or "Ё" in token
+                ):
                     freq *= 1.5
                 if len(token) < 3 and token not in prefixes | suffixes | endings:
                     freq *= 0.5
@@ -136,11 +139,8 @@ class TokenizerMerger:
             base_tokenizer_name_or_path: HuggingFace model name or path
                 e.g., "Qwen/Qwen2.5-7B", "meta-llama/Llama-2-7b-hf"
         """
-        self.base_tokenizer = AutoTokenizer.from_pretrained(
-            base_tokenizer_name_or_path,
-            trust_remote_code=True,
-        )
-        self.base_vocab = set(self.base_tokenizer.get_vocab().keys())
+        self.base_tokenizer = AutoTokenizer.from_pretrained(base_tokenizer_name_or_path, trust_remote_code=True)
+        self.base_vocab = set(self.base_tokenizer.get_vocab())
         self.extractor = BelarusianTokenExtractor(self.base_tokenizer)
 
         logger.info(f"Loaded base tokenizer with {len(self.base_vocab)} tokens")
@@ -163,24 +163,24 @@ class TokenizerMerger:
         pre_tokenizer = BelarusianPreTokenizer()
 
         for text in texts:
-            pre_tokens = pre_tokenizer.pre_tokenize(text)
-            for token, token_type in pre_tokens:
-                if token_type == TokenType.word:
-                    stats["total_words"] += 1
+            for token, _ in filter(
+                lambda token_type: token_type[1] == TokenType.word,
+                pre_tokenizer.pre_tokenize(text),
+            ):
+                stats["total_words"] += 1
 
-                    encoded = self.base_tokenizer.encode(token, add_special_tokens=False)
-                    num_tokens = len(encoded)
-                    stats["total_tokens"] += num_tokens
+                encoded = self.base_tokenizer.encode(token, add_special_tokens=False)
+                num_tokens = len(encoded)
+                stats["total_tokens"] += num_tokens
 
-                    unk_id = self.base_tokenizer.unk_token_id
-                    if unk_id and unk_id in encoded:
-                        stats["unk_tokens"] += 1
+                if (unk_id:=self.base_tokenizer.unk_token_id) and unk_id in encoded:
+                    stats["unk_tokens"] += 1
 
-                    if num_tokens == 1:
-                        stats["single_token_words"] += 1
-                    else:
-                        stats["multi_token_words"] += 1
-                        word_fragmentation[token] = num_tokens
+                if num_tokens == 1:
+                    stats["single_token_words"] += 1
+                else:
+                    stats["multi_token_words"] += 1
+                    word_fragmentation[token] = num_tokens
 
         if stats["total_words"] > 0:
             stats["avg_tokens_per_word"] = stats["total_tokens"] / stats["total_words"]
@@ -190,48 +190,25 @@ class TokenizerMerger:
 
         return stats
 
-    def select_tokens_to_add(
-        self,
-        texts: t.Iterator[str],
-        config: MergeConfig | None = None,
-    ) -> list[str]:
+    def select_tokens_to_add(self, texts: t.Iterator[str], config: MergeConfig) -> list[str]:
         """
         Select which Belarusian tokens to add to the vocabulary.
 
         Returns:
             List of tokens to add, in priority order
         """
-        config = config or MergeConfig()
-
         logger.info("Extracting candidate tokens from corpus...")
-        token_freqs = self.extractor.extract_candidate_tokens(
-            texts,
-            min_freq=config.min_frequency,
-        )
+        token_freqs = self.extractor.extract_candidate_tokens(texts, min_freq=config.min_frequency)
         logger.info(f"Found {len(token_freqs)} candidate tokens")
 
-        scored = self.extractor.score_tokens(
-            token_freqs,
-            prioritize_morphemes=config.prioritize_morphemes,
-        )
+        scored = self.extractor.score_tokens(token_freqs,config.prioritize_morphemes)
 
         selected = []
         for token, _ in scored:
             if len(selected) >= config.max_new_tokens:
                 break
-
-            if config.skip_existing:
-                forms_to_check = [
-                    token,
-                    f"▁{token}",  # SentencePiece style
-                    f"Ġ{token}",  # GPT-2 style
-                    f"##{token}",  # BERT style
-                ]
-                if any(form in self.base_vocab for form in forms_to_check):
-                    continue
-
-            selected.append(token)
-
+            if not config.skip_existing or not any(form in self.base_vocab for form in (token, f"##{token}")):
+                selected.append(token)
         logger.info(f"Selected {len(selected)} new tokens to add")
         return selected
 
@@ -275,10 +252,12 @@ class TokenizerMerger:
         config: MergeConfig | None = None,
     ) -> "PreTrainedTokenizerFast":
         config = config or MergeConfig()
+        logger.info(f"method: merge_from_corpus {config=}")
         logger.info("Analyzing Belarusian coverage...")
         stats = self.analyze_belarusian_coverage(iter(texts))
         logger.info(f"Current avg tokens/word: {stats['avg_tokens_per_word']:.2f}")
         logger.info(f"Single-token words: {stats['single_token_words']:,}/{stats['total_words']:,}")
+        logger.info(f"Full stats: {stats}")
 
         tokens_to_add = self.select_tokens_to_add(iter(texts), config)
         return self.add_tokens(tokens_to_add, output_path)
