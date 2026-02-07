@@ -68,14 +68,16 @@ def train_standalone_tokenizer(
     return tokenizer
 
 
-def train_and_merge_with_base(corpus: t.Iterator[str], output_path: str, base_model: str, config: MergeConfig) -> None:
+def train_and_merge_with_base(
+    corpus: t.Iterator[str], output_path: str, base_model: str, config: MergeConfig, use_bytes: bool = False
+) -> None:
     """
     Train Belarusian tokens and merge with a base model tokenizer.
     """
 
-    logger.info(f"Merging with base model: {base_model}")
+    logger.info(f"Merging with base model: {base_model} {'(byte-level)' if use_bytes else ''}")
 
-    merger = TokenizerMerger(base_model)
+    merger = TokenizerMerger(base_model, use_bytes=use_bytes)
 
     tokenizer = merger.merge_from_corpus(list(corpus), output_path, config)
 
@@ -85,8 +87,23 @@ def train_and_merge_with_base(corpus: t.Iterator[str], output_path: str, base_mo
     original = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
 
     logger.info(f"  Text: '{test_text}'")
-    logger.info(f"  Original: {original.tokenize(test_text)} ({len(original.encode(test_text)):,} tokens)")
-    logger.info(f"  Merged:   {tokenizer.tokenize(test_text)} ({len(tokenizer.encode(test_text)):,} tokens)")
+
+    # Get token IDs first, then decode for display
+    original_ids = original.encode(test_text, add_special_tokens=False)
+    merged_ids = tokenizer.encode(test_text, add_special_tokens=False)
+
+    # For display, try to show readable tokens with fallback
+    try:
+        # Try to get readable tokens
+        original_tokens = [original.decode([tid]) for tid in original_ids]
+        merged_tokens = [tokenizer.decode([tid]) for tid in merged_ids]
+    except Exception:
+        # Fallback to convert_ids_to_tokens if decode fails
+        original_tokens = original.convert_ids_to_tokens(original_ids)
+        merged_tokens = tokenizer.convert_ids_to_tokens(merged_ids)
+
+    logger.info(f"  Original: {original_tokens} ({len(original_ids):,} tokens)")
+    logger.info(f"  Merged:   {merged_tokens} ({len(merged_ids):,} tokens)")
 
 
 def main():
@@ -114,6 +131,9 @@ def main():
         help="Tokenization algorithm",
     )
     parser.add_argument("--no-morphology", action="store_true", help="Disable morphological awareness")
+    parser.add_argument(
+        "--use-bytes", action="store_true", help="Use byte-level tokenization for better Cyrillic capital handling"
+    )
 
     parser.add_argument("--merge-model", type=str, help="Base model to merge with (e.g., 'Qwen/Qwen2.5-1.5B')")
     parser.add_argument(
@@ -148,10 +168,9 @@ def main():
         logger.error("Please provide --corpus or --dataset")
         return
 
-
     config = MergeConfig(max_new_tokens=args.max_new_tokens, prioritize_morphemes=True)
     if args.merge_model:
-        train_and_merge_with_base(corpus, args.output, args.merge_model, config)
+        train_and_merge_with_base(corpus, args.output, args.merge_model, config, use_bytes=args.use_bytes)
     else:
         train_standalone_tokenizer(
             corpus,

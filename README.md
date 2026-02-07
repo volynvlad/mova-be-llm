@@ -113,28 +113,51 @@ uv run python mova_be_llm/clean_txt.py
 
 ## Train standalone tokenizer
 ```sh
-python train_belarusian_tokenizer.py --corpus data/interim --output ./be_tokenizer
-```
-
-```sh
-uv run python mova_be_llm/train_belarusian_tokenizer.py --corpus data/processed/qwen_belarusian_v2.txt --output ./be_tokenizer --vocab-size 32000
+uv run python mova_be_llm/train_belarusian_tokenizer.py \
+    --corpus data/processed/qwen_belarusian_v2.txt \
+    --output ./be_tokenizer \
+    --vocab-size 32000
 ```
 
 ## Merge with Qwen2.5
 ```sh
-uv run python train_belarusian_tokenizer.py --corpus corpus.txt --merge-model Qwen/Qwen2.5-1.5B --output ./qwen_be
+uv run python mova_be_llm/train_belarusian_tokenizer.py \
+    --dataset oscar \
+    --merge-model Qwen/Qwen2.5-7B \
+    --output ./qwen_be \
+    --max-samples 100000
 ```
 
-```sh
-uv run python mova_be_llm/train_belarusian_tokenizer.py --dataset oscar --merge-model Qwen/Qwen2.5-7B --output ./qwen_be --max-samples 100000
-```
+# Model Training and Usage
 
-## Download and use a Belarusian dataset
-```sh
-python train_belarusian_tokenizer.py --dataset oscar --output ./be_tokenizer
-```
+## Fine-tune Qwen with Belarusian tokenizer
+Fine-tune a Qwen model using the Belarusian-enhanced tokenizer:
 
 ```sh
-uv run python mova_be_llm/train_belarusian_tokenizer.py --corpus data/interim/ --merge-model Qwen/Qwen2.5-7B --output ./qwen_be --max-new-tokens 8000
+# Quick test with small dataset
+uv run python -m mova_be_llm.fine_tune_belarusian_qwen --max-samples 1000 --epochs 1
+
+# Full training with custom parameters
+uv run python -m mova_be_llm.fine_tune_belarusian_qwen \
+  --base-model Qwen/Qwen2.5-1.5B-Instruct \
+  --tokenizer-path ./results/qwen2.5_7b_be_fixed_bytes \
+  --data-path data/processed \
+  --output-dir ./results/qwen2.5_1.5b_be_finetuned \
+  --max-samples 10000 \
+  --epochs 3 \
+  --batch-size 2 \
+  --learning-rate 5e-5
 ```
+
+## Use Belarusian-enhanced tokenizer
+Example showing how to use the merged tokenizer with Qwen models:
+
+```sh
+uv run python examples/use_belarusian_tokenizer.py
+```
+
+This script demonstrates:
+- Tokenization comparison between original and Belarusian-enhanced tokenizers
+- Text generation using the fine-tuned model
+- Performance analysis showing 30-48% token reduction for Belarusian text
 

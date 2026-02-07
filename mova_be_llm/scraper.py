@@ -1,11 +1,10 @@
-import os
-import requests
-from bs4 import BeautifulSoup
 import asyncio
-import aiohttp
-from tqdm.asyncio import tqdm
-from aiohttp_retry import RetryClient, ExponentialRetry
+import os
 
+import aiohttp
+from bs4 import BeautifulSoup
+import requests
+from tqdm.asyncio import tqdm
 
 BOOKS_PATH = "data/raw/knihi_books"
 os.makedirs(BOOKS_PATH, exist_ok=True)

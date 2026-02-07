@@ -1,6 +1,6 @@
 import os
-import typer
 
+import typer
 
 MODEL_TO_FILE_SEP_TOKEN = {"qwen": " <|file_sep|> "}
 

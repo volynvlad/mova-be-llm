@@ -8,16 +8,17 @@ For DJVU support, you may also need system package:
     sudo apt install djvulibre-bin  # Ubuntu/Debian
 """
 
+import os
+from pathlib import Path
 import re
 import unicodedata
-from pathlib import Path
+
+from bs4 import BeautifulSoup
+import djvu.decode
 import ebooklib
 from ebooklib import epub
-from bs4 import BeautifulSoup
-import os
-from rich.progress import track
 import fitz  # PyMuPDF
-import djvu.decode
+from rich.progress import track
 
 from logger import get_logger
 

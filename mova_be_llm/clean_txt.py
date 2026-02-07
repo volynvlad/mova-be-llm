@@ -1,5 +1,5 @@
-import unicodedata
 import re
+import unicodedata
 
 CONTROL = dict.fromkeys(range(32))
 CONTROL.pop(9)

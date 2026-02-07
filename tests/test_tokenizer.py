@@ -3,7 +3,7 @@ Tests for the Belarusian Tokenizer
 """
 
 import unittest
-from belarusian_tokenizer import (
+from mova_be_llm.belarusian_tokenizer import (
     BelarusianMorphology,
     BelarusianPreTokenizer,
     MorphologicalTokenizer,
@@ -35,11 +35,11 @@ class TestBelarusianMorphology(unittest.TestCase):
         vowels = BelarusianMorphology.VOWELS
         consonants = BelarusianMorphology.CONSONANTS
 
-        self.assertIn('а', vowels)
-        self.assertIn('е', vowels)
-        self.assertIn('і', vowels)
-        self.assertIn('ў', consonants)
-        self.assertIn('б', consonants)
+        self.assertIn("а", vowels)
+        self.assertIn("е", vowels)
+        self.assertIn("і", vowels)
+        self.assertIn("ў", consonants)
+        self.assertIn("б", consonants)
 
 
 class TestPreTokenizer(unittest.TestCase):
@@ -102,7 +102,7 @@ class TestMorphologicalTokenizer(unittest.TestCase):
     def test_prefix_detection(self):
         """Test prefix detection."""
         result = self.tokenizer.segment("перакладчык")
-        self.assertEqual(result['prefix'].lower(), "пера")
+        self.assertEqual(result["prefix"].lower(), "пера")
 
     def test_suffix_detection(self):
         """Test suffix detection."""
@@ -110,21 +110,21 @@ class TestMorphologicalTokenizer(unittest.TestCase):
         # Should detect -ач as part of root or suffix
 
         result = self.tokenizer.segment("настаўнік")
-        self.assertIn("нік", result['suffix'].lower())
+        self.assertIn("нік", result["suffix"].lower())
 
     def test_ending_detection(self):
         """Test grammatical ending detection."""
         result = self.tokenizer.segment("кнігамі")
-        self.assertIn("амі", result['ending'].lower())
+        self.assertIn("амі", result["ending"].lower())
 
         result = self.tokenizer.segment("беларускай")
-        self.assertIn("ай", result['ending'].lower())
+        self.assertIn("ай", result["ending"].lower())
 
     def test_complex_word(self):
         """Test complex word segmentation."""
         result = self.tokenizer.segment("падручнікаў")
-        self.assertIsNotNone(result['prefix'])
-        self.assertIsNotNone(result['root'])
+        self.assertIsNotNone(result["prefix"])
+        self.assertIsNotNone(result["root"])
 
     def test_segment_to_tokens(self):
         """Test segmentation to token list."""
@@ -132,7 +132,7 @@ class TestMorphologicalTokenizer(unittest.TestCase):
         self.assertTrue(len(tokens) > 0)
 
         # Check for morpheme markers
-        has_prefix_marker = any(t.startswith('▸') for t in tokens)
+        has_prefix_marker = any(t.startswith("▸") for t in tokens)
         self.assertTrue(has_prefix_marker)
 
 
@@ -170,8 +170,8 @@ class TestBPETokenizer(unittest.TestCase):
         self.assertIsInstance(ids[0], int)
 
         # First and last should be special tokens
-        self.assertEqual(ids[0], self.tokenizer.token_to_id['<bos>'])
-        self.assertEqual(ids[-1], self.tokenizer.token_to_id['<eos>'])
+        self.assertEqual(ids[0], self.tokenizer.token_to_id["<bos>"])
+        self.assertEqual(ids[-1], self.tokenizer.token_to_id["<eos>"])
 
     def test_vocab_size(self):
         """Test vocabulary size."""
@@ -179,7 +179,7 @@ class TestBPETokenizer(unittest.TestCase):
 
     def test_special_tokens(self):
         """Test special tokens are in vocabulary."""
-        for token in ['<pad>', '<unk>', '<bos>', '<eos>']:
+        for token in ["<pad>", "<unk>", "<bos>", "<eos>"]:
             self.assertIn(token, self.tokenizer.token_to_id)
 
 
@@ -189,7 +189,7 @@ class TestBelarusianTokenizer(unittest.TestCase):
     def setUp(self):
         self.tokenizer = BelarusianTokenizer(
             vocab_size=500,
-            algorithm='bpe',
+            algorithm="bpe",
             use_morphology=True,
         )
 
@@ -208,10 +208,10 @@ class TestBelarusianTokenizer(unittest.TestCase):
     def test_morpheme_segmentation(self):
         """Test morpheme segmentation method."""
         result = self.tokenizer.segment_morphemes("перакладчык")
-        self.assertIn('prefix', result)
-        self.assertIn('root', result)
-        self.assertIn('suffix', result)
-        self.assertIn('ending', result)
+        self.assertIn("prefix", result)
+        self.assertIn("root", result)
+        self.assertIn("suffix", result)
+        self.assertIn("ending", result)
 
     def test_vocab_property(self):
         """Test vocab property."""
@@ -250,7 +250,7 @@ class TestEdgeCases(unittest.TestCase):
     def test_single_character_word(self):
         """Test single character words."""
         result = self.morph.segment("я")
-        self.assertIsNotNone(result['root'])
+        self.assertIsNotNone(result["root"])
 
     def test_very_long_word(self):
         """Test very long word handling."""
@@ -282,7 +282,7 @@ class TestSpecialCharacters(unittest.TestCase):
     def test_i_dotted(self):
         """Test і (i) handling."""
         result = self.morph.segment("радзіма")
-        self.assertIsNotNone(result['root'])
+        self.assertIsNotNone(result["root"])
 
     def test_yo(self):
         """Test ё handling."""

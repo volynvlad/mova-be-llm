@@ -1,11 +1,11 @@
-import math
-import re
-import json
 from collections import Counter
-import typing as t
 from dataclasses import dataclass, field
 from itertools import chain
+import json
+import math
 from pathlib import Path
+import re
+import typing as t
 
 from mova_be_llm.types import TokenType
 
@@ -16,6 +16,7 @@ MAX_SUBWORD_LENGTH = 20
 
 
 def bytes_to_unicode() -> dict[int, str]:
+    """Convert bytes to unicode characters for byte-level tokenization."""
     bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
     cs = bs[:]
     n = 0
@@ -25,6 +26,11 @@ def bytes_to_unicode() -> dict[int, str]:
             cs.append(2**8 + n)
             n += 1
     return dict(zip(bs, [chr(c) for c in cs]))
+
+
+def unicode_to_bytes() -> dict[str, int]:
+    """Reverse mapping for unicode to bytes."""
+    return {v: k for k, v in bytes_to_unicode().items()}
 
 
 class BelarusianMorphology:
@@ -215,42 +221,40 @@ class BelarusianMorphology:
         "ў",
     ]
 
-    CYRILLIC_CAPITAL_MERGES = [
-        ("Ð", "Ĳ"),  # А
-        ("Ð", "ĳ"),  # Б
-        ("Ð", "Ĵ"),  # В
-        ("Ð", "ĵ"),  # Г
-        ("Ð", "Ķ"),  # Д
-        ("Ð", "ķ"),  # Е
-        ("Ð", "ĸ"),  # Ж
-        ("Ð", "Ĺ"),  # З
-        ("Ð", "ĺ"),  # И
-        ("Ð", "Ļ"),  # Й
-        ("Ð", "ļ"),  # К
-        ("Ð", "Ľ"),  # Л
-        ("Ð", "ľ"),  # М
-        ("Ð", "Ŀ"),  # Н
-        ("Ð", "ŀ"),  # О
-        ("Ð", "Ł"),  # П
-        ("Ð", "ł"),  # Р
-        ("Ð", "¡"),  # С
-        ("Ð", "¢"),  # Т
-        ("Ð", "£"),  # У
-        ("Ð", "¤"),  # Ф
-        ("Ð", "¥"),  # Х
-        ("Ð", "¦"),  # Ц
-        ("Ð", "§"),  # Ч
-        ("Ð", "¨"),  # Ш
-        ("Ð", "©"),  # Щ
-        ("Ð", "ª"),  # Ъ
-        ("Ð", "«"),  # Ы
-        ("Ð", "¬"),  # Ь
-        ("Ð", "Ń"),  # Э
-        ("Ð", "®"),  # Ю
-        ("Ð", "¯"),  # Я
-        ("Ð", "ģ"),  # Ё
-        ("Ð", "Ĩ"),  # І
-        ("Ð", "İ"),  # Ў
+    # Pre-computed UTF-8 byte pairs for Cyrillic capital letters to help BPE merge them
+    CYRILLIC_CAPITAL_BYTE_PAIRS = [
+        (0xD0, 0x90),  # А
+        (0xD0, 0x91),  # Б
+        (0xD0, 0x92),  # В
+        (0xD0, 0x93),  # Г
+        (0xD0, 0x94),  # Д
+        (0xD0, 0x95),  # Е
+        (0xD0, 0x81),  # Ё
+        (0xD0, 0x96),  # Ж
+        (0xD0, 0x97),  # З
+        (0xD0, 0x86),  # І
+        (0xD0, 0x99),  # Й
+        (0xD0, 0x9A),  # К
+        (0xD0, 0x9B),  # Л
+        (0xD0, 0x9C),  # М
+        (0xD0, 0x9D),  # Н
+        (0xD0, 0x9E),  # О
+        (0xD0, 0x9F),  # П
+        (0xD0, 0xA0),  # Р
+        (0xD0, 0xA1),  # С
+        (0xD0, 0xA2),  # Т
+        (0xD0, 0xA3),  # У
+        (0xD0, 0x8E),  # Ў
+        (0xD0, 0xA4),  # Ф
+        (0xD0, 0xA5),  # Х
+        (0xD0, 0xA6),  # Ц
+        (0xD0, 0xA7),  # Ч
+        (0xD0, 0xA8),  # Ш
+        (0xD0, 0xAB),  # Ы
+        (0xD0, 0xAC),  # Ь
+        (0xD0, 0xAD),  # Э
+        (0xD0, 0xAE),  # Ю
+        (0xD0, 0xAF),  # Я
     ]
 
     CYRILLIC_LOWER = "абвгдеёжзійклмнопрстуўфхцчшыьэюя"
@@ -414,6 +418,7 @@ class BPEConfig:
     use_morphology: bool = True
     lowercase: bool = False
     continuing_subword_prefix: str = "##"
+    use_bytes: bool = True
 
 
 class BelarusianBPETokenizer:
@@ -424,8 +429,17 @@ class BelarusianBPETokenizer:
 
         self.token_to_id: dict[str, int] = {}
         self.id_to_token: dict[int, str] = {}
-        self.merges: list[tuple[str, str]] = []  # self.morphological.morphology.CYRILLIC_CAPITAL_MERGES
-        self.merge_ranks: dict[tuple[str, str], int] = {}  # {merge: i for i, merge in enumerate(reversed(self.merges))}
+        self.merges: list[tuple[str, str]] = []
+        self.merge_ranks: dict[tuple[str, str], int] = {}
+
+        if self.config.use_bytes:
+            self.byte_encoder = bytes_to_unicode()
+            self.byte_decoder = unicode_to_bytes()
+            # Add Cyrillic byte pairs to initial merges to prioritize them
+            for byte1, byte2 in self.morphological.morphology.CYRILLIC_CAPITAL_BYTE_PAIRS:
+                unicode1 = self.byte_encoder[byte1]
+                unicode2 = self.byte_encoder[byte2]
+                self.merges.append((unicode1, unicode2))
 
         self._init_special_tokens()
 
@@ -438,13 +452,26 @@ class BelarusianBPETokenizer:
             self.id_to_token[i] = token
 
     def _get_base_vocab(self) -> set[str]:
+        if self.config.use_bytes:
+            vocab = set(self.byte_encoder.values())
+            vocab.add(" ")
+            if self.config.use_morphology:
+                morph = BelarusianMorphology()
+                for prefix in morph.PREFIXES:
+                    vocab.add(f"▸{prefix}")
+                for suffix in morph.SUFFIXES:
+                    vocab.add(f"◂{suffix}")
+                for ending in morph.ENDINGS:
+                    vocab.add(f"▪{ending}")
+            return vocab
+
         vocab = set(
             chain(
                 BelarusianMorphology.CYRILLIC_ALL,
                 LATIN_ALL,
                 NUMBERS,
                 SPECIAL_SYMBOLS,
-                chain(*self.morphological.morphology.CYRILLIC_CAPITAL_MERGES),
+                [" "],  # Add space explicitly
             )
         )
         if self.config.use_morphology:
@@ -460,6 +487,10 @@ class BelarusianBPETokenizer:
     def _word_to_chars(self, word: str) -> list[str]:
         if not word:
             return []
+
+        if self.config.use_bytes:
+            word_bytes = word.encode("utf-8")
+            return [self.byte_encoder[byte] for byte in word_bytes]
 
         if self.config.use_morphology:
             segments = self.morphological.segment(word)
@@ -519,7 +550,15 @@ class BelarusianBPETokenizer:
                 self.token_to_id[token] = idx
                 self.id_to_token[idx] = token
                 idx += 1
-        self.merge_ranks = self.merge_ranks | {merge: i for i, merge in enumerate(self.merges)}
+
+        for merge in self.merges:
+            merged_token = merge[0] + merge[1]
+            if merged_token not in self.token_to_id:
+                self.token_to_id[merged_token] = idx
+                self.id_to_token[idx] = merged_token
+                idx += 1
+
+        self.merge_ranks = {merge: i for i, merge in enumerate(self.merges)}
 
     def _get_best_pair_freq(self, pair_freqs: Counter) -> tuple[tuple[str, str] | None, int | float]:
         best_pair = None
@@ -608,8 +647,11 @@ class BelarusianBPETokenizer:
                 result.extend(self._apply_bpe(token))
             elif token_type == TokenType.number:
                 result.append(token)
-            elif token_type == TokenType.space and token == "\n":
-                result.append("<nl>")
+            elif token_type == TokenType.space:
+                if token == "\n":
+                    result.append("<nl>")
+                else:
+                    result.append(" ")  # Preserve spaces
             elif token_type == TokenType.punct:
                 result.append(token)
             elif token_type in (TokenType.url, TokenType.email):
@@ -641,6 +683,43 @@ class BelarusianBPETokenizer:
 
         def strip_markers(s: str) -> str:
             return s.replace("▸", "").replace("◂", "").replace("▪", "")
+
+        if self.config.use_bytes:
+            result = []
+            byte_values = []
+
+            for token in tokens:
+                if token in self.config.special_tokens and skip_special_tokens:
+                    if token == "<nl>":
+                        result.append("\n")
+                    continue
+                elif token == "<nl>":
+                    result.append("\n")
+                elif token == " ":
+                    result.append(" ")
+                elif token in self.byte_decoder:
+                    byte_values.append(self.byte_decoder[token])
+                else:
+                    temp_bytes = []
+                    for char in token:
+                        if char in self.byte_decoder:
+                            temp_bytes.append(self.byte_decoder[char])
+                    if temp_bytes:
+                        try:
+                            decoded = bytes(temp_bytes).decode("utf-8", errors="replace")
+                            result.append(decoded)
+                        except Exception:
+                            # If decoding fails, skip this token
+                            continue
+
+            if byte_values:
+                try:
+                    decoded = bytes(byte_values).decode("utf-8", errors="replace")
+                    result.append(decoded)
+                except Exception:
+                    pass
+
+            return "".join(result)
 
         result = []
         for token in tokens:
@@ -679,6 +758,7 @@ class BelarusianBPETokenizer:
             "use_morphology": self.config.use_morphology,
             "lowercase": self.config.lowercase,
             "continuing_subword_prefix": self.config.continuing_subword_prefix,
+            "use_bytes": self.config.use_bytes,
         }
         with open(path / "tokenizer_config.json", "w", encoding="utf-8") as f:
             json.dump(config_dict, f, ensure_ascii=False, indent=2)
@@ -704,7 +784,7 @@ class BelarusianBPETokenizer:
 
         with open(path / "merges.txt", "r", encoding="utf-8") as f:
             for f_line in f:
-                if (line:=f_line.strip()):
+                if line := f_line.strip():
                     parts = line.split(" ", 1)
                     if len(parts) == 2:
                         tokenizer.merges.append((parts[0], parts[1]))
@@ -912,11 +992,13 @@ class BelarusianTokenizer:
         algorithm: str = "bpe",
         use_morphology: bool = True,
         lowercase: bool = False,
+        use_bytes: bool = True,
     ):
         self.config = BPEConfig(
             vocab_size=vocab_size,
             use_morphology=use_morphology,
             lowercase=lowercase,
+            use_bytes=use_bytes,
         )
 
         if algorithm == "bpe":
@@ -969,6 +1051,7 @@ class BelarusianTokenizer:
             algorithm=config.get("algorithm", "bpe"),
             use_morphology=config.get("use_morphology", True),
             lowercase=config.get("lowercase", False),
+            use_bytes=config.get("use_bytes", True),
         )
 
         if config.get("algorithm") == "bpe":

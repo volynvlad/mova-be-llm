@@ -10,17 +10,21 @@ Strategies:
 3. Embedding Extension - Extend model embeddings for new tokens
 """
 
+from collections import Counter
 import json
+import logging
 from pathlib import Path
 import typing as t
-from collections import Counter
-import logging
-
 
 import torch
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
-from mova_be_llm.belarusian_tokenizer import BelarusianPreTokenizer, BelarusianMorphology
+from mova_be_llm.belarusian_tokenizer import (
+    BelarusianBPETokenizer,
+    BelarusianMorphology,
+    BelarusianPreTokenizer,
+    BPEConfig,
+)
 from mova_be_llm.types import MergeConfig, TokenType
 
 logging.basicConfig(level=logging.INFO)
@@ -31,9 +35,15 @@ MIN_FREQ = 5
 
 
 class BelarusianTokenExtractor:
-    def __init__(self, base_tokenizer=None):
+    def __init__(self, base_tokenizer=None, use_bytes=False):
         self.base_tokenizer = base_tokenizer
-        self.pre_tokenizer = BelarusianPreTokenizer()
+        self.use_bytes = use_bytes
+        if use_bytes and base_tokenizer is None:
+            # Create a byte-level tokenizer for extraction
+            config = BPEConfig(use_bytes=True, use_morphology=False)
+            self.pre_tokenizer = BelarusianBPETokenizer(config)
+        else:
+            self.pre_tokenizer = BelarusianPreTokenizer()
         self.morphology = BelarusianMorphology()
 
     def extract_candidate_tokens(
@@ -46,16 +56,46 @@ class BelarusianTokenExtractor:
         token_freqs = Counter()
 
         for text in texts:
-            for token, token_type in self.pre_tokenizer.pre_tokenize(text):
-                if token_type == TokenType.word:
-                    word = token.lower()
-                    word_freqs[word] += 1
+            if self.use_bytes and hasattr(self.pre_tokenizer, "_word_to_chars"):
+                # Use byte-level tokenization
+                words = []
+                current_word = []
+                for char in text:
+                    if char.isalpha() and any(
+                        c in char for c in "абвгдеёжзійклмнопрстуўфхцчшыьэюяАБВГДЕЁЖЗІЙКЛМНОПРСТУЎФХЦЧШЫЬЭЮЯ"
+                    ):
+                        current_word.append(char)
+                    else:
+                        if current_word:
+                            words.append("".join(current_word))
+                            current_word = []
+                        if char.strip():
+                            words.append(char)
+                if current_word:
+                    words.append("".join(current_word))
 
-                    for i in range(len(word)):
-                        for j in range(i + 1, min(i + max_subword_length + 1, len(word) + 1)):
-                            substr = word[i:j]
-                            if len(substr) >= 2:
-                                token_freqs[substr] += 1
+                for word in words:
+                    if any(c.isalpha() for c in word):
+                        word_lower = word.lower()
+                        word_freqs[word_lower] += 1
+                        chars = self.pre_tokenizer._word_to_chars(word_lower)
+                        for i in range(len(chars)):
+                            for j in range(i + 1, min(i + max_subword_length + 1, len(chars) + 1)):
+                                substr = "".join(chars[i:j])
+                                if len(substr) >= 2:
+                                    token_freqs[substr] += 1
+            else:
+                # Use character-level tokenization
+                for token, token_type in self.pre_tokenizer.pre_tokenize(text):
+                    if token_type == TokenType.word:
+                        word = token.lower()
+                        word_freqs[word] += 1
+
+                        for i in range(len(word)):
+                            for j in range(i + 1, min(i + max_subword_length + 1, len(word) + 1)):
+                                substr = word[i:j]
+                                if len(substr) >= 2:
+                                    token_freqs[substr] += 1
 
         for word, freq in word_freqs.items():
             if freq >= min_freq:
@@ -78,10 +118,7 @@ class BelarusianTokenExtractor:
                     freq *= 2.5
                 elif token in endings:
                     freq *= 2.0
-                if (
-                    "ў" in token or "і" in token or "ё" in token 
-                    or "Ў" in token or "І" in token or "Ё" in token
-                ):
+                if "ў" in token or "і" in token or "ё" in token or "Ў" in token or "І" in token or "Ё" in token:
                     freq *= 1.5
                 if len(token) < 3 and token not in prefixes | suffixes | endings:
                     freq *= 0.5
@@ -133,17 +170,21 @@ class BelarusianTokenExtractor:
 
 
 class TokenizerMerger:
-    def __init__(self, base_tokenizer_name_or_path: str):
+    def __init__(self, base_tokenizer_name_or_path: str, use_bytes: bool = False):
         """
         Args:
             base_tokenizer_name_or_path: HuggingFace model name or path
                 e.g., "Qwen/Qwen2.5-7B", "meta-llama/Llama-2-7b-hf"
+            use_bytes: Whether to use byte-level tokenization for extraction
         """
         self.base_tokenizer = AutoTokenizer.from_pretrained(base_tokenizer_name_or_path, trust_remote_code=True)
         self.base_vocab = set(self.base_tokenizer.get_vocab())
-        self.extractor = BelarusianTokenExtractor(self.base_tokenizer)
+        self.use_bytes = use_bytes
+        self.extractor = BelarusianTokenExtractor(self.base_tokenizer, use_bytes=use_bytes)
 
-        logger.info(f"Loaded base tokenizer with {len(self.base_vocab)} tokens")
+        logger.info(
+            f"Loaded base tokenizer with {len(self.base_vocab)} tokens {'(byte-level extraction)' if use_bytes else ''}"
+        )
 
     def analyze_belarusian_coverage(self, texts: t.Iterator[str]) -> dict[str, int | list[str]]:
         """
@@ -160,7 +201,12 @@ class TokenizerMerger:
         }
 
         word_fragmentation = {}
-        pre_tokenizer = BelarusianPreTokenizer()
+
+        if self.use_bytes and hasattr(self.extractor, "pre_tokenizer"):
+            # Use the same tokenization as the extractor
+            pre_tokenizer = self.extractor.pre_tokenizer
+        else:
+            pre_tokenizer = BelarusianPreTokenizer()
 
         for text in texts:
             for token, _ in filter(
@@ -173,7 +219,7 @@ class TokenizerMerger:
                 num_tokens = len(encoded)
                 stats["total_tokens"] += num_tokens
 
-                if (unk_id:=self.base_tokenizer.unk_token_id) and unk_id in encoded:
+                if (unk_id := self.base_tokenizer.unk_token_id) and unk_id in encoded:
                     stats["unk_tokens"] += 1
 
                 if num_tokens == 1:
@@ -201,7 +247,7 @@ class TokenizerMerger:
         token_freqs = self.extractor.extract_candidate_tokens(texts, min_freq=config.min_frequency)
         logger.info(f"Found {len(token_freqs)} candidate tokens")
 
-        scored = self.extractor.score_tokens(token_freqs,config.prioritize_morphemes)
+        scored = self.extractor.score_tokens(token_freqs, config.prioritize_morphemes)
 
         selected = []
         for token, _ in scored:
@@ -254,10 +300,11 @@ class TokenizerMerger:
         config = config or MergeConfig()
         logger.info(f"method: merge_from_corpus {config=}")
         logger.info("Analyzing Belarusian coverage...")
-        stats = self.analyze_belarusian_coverage(iter(texts))
+        # Sample first 10000 texts for faster analysis
+        sample_texts = list(texts)[:10000] if len(texts) > 10000 else texts
+        stats = self.analyze_belarusian_coverage(iter(sample_texts))
         logger.info(f"Current avg tokens/word: {stats['avg_tokens_per_word']:.2f}")
         logger.info(f"Single-token words: {stats['single_token_words']:,}/{stats['total_words']:,}")
-        logger.info(f"Full stats: {stats}")
 
         tokens_to_add = self.select_tokens_to_add(iter(texts), config)
         return self.add_tokens(tokens_to_add, output_path)
@@ -355,8 +402,9 @@ def merge_with_model(
     output_path: str,
     model_name: str,
     max_new_tokens: int = 8000,
+    use_bytes: bool = False,
 ) -> t.Optional["PreTrainedTokenizerFast"]:
-    merger = TokenizerMerger(model_name)
+    merger = TokenizerMerger(model_name, use_bytes=use_bytes)
     config = MergeConfig(max_new_tokens=max_new_tokens, prioritize_morphemes=True)
     return merger.merge_from_corpus(list(corpus_texts), output_path, config)
 
@@ -421,7 +469,7 @@ def main():
         print(
             f"  Single-token words: {stats['single_token_words']}/{stats['total_words']} ({100 * stats['single_token_words'] / max(1, stats['total_words']):.1f}%)"
         )
-        print(f"\n  Most fragmented words:")
+        print("\n  Most fragmented words:")
         for word, num_tokens, tokens in stats["worst_words"][:5]:
             print(f"    {word} -> {tokens} ({num_tokens} tokens)")
     except Exception as e:

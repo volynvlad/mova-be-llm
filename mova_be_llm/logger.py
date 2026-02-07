@@ -1,7 +1,6 @@
 import logging
 from os import getenv
 
-
 FILEPATH: str = "mov_be_llm.log"
 FORMAT: str = "[{name}]-[%(levelname)s]-[%(asctime)s]-[%(message)s]"
 TO_FILE: bool = getenv("LOG_TO_FILE", "False").lower() == "true"
