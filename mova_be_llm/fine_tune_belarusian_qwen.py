@@ -1,36 +1,29 @@
 #!/usr/bin/env python3
 """
-Fine-tune Qwen model with Belarusian-enhanced tokenizer.
+Fine-tune Qwen model with Belarusian-enhanced tokenizer using Unsloth.
 
-This script performs supervised fine-tuning of a Qwen model using the Belarusian
-tokenizer to teach the model proper Belarusian language patterns.
+This script uses Unsloth for efficient fine-tuning of Qwen models with Belarusian
+tokenizer, providing significantly faster training and lower memory usage.
 """
 
-import logging
+from unsloth import FastLanguageModel
+from unsloth.chat_templates import get_chat_template
+import sys
+from trl.trainer import sft_trainer
+import argparse
 from pathlib import Path
 
-import torch
 from datasets import Dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    DataCollatorForLanguageModeling,
-    TrainingArguments,
-    Trainer,
-)
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling, TrainingArguments
+from loguru import logger
 
-from .config import DATA_PROCESSED_DIR
+# from .config import PROCESSED_DATA_DIR
 from .loader import load_directory, load_jsonl, load_text_file
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+logger.add(sys.stdout, colorize=True, format="<green>{time}</green> <level>{message}</level>", backtrace=True)
 
 
-def load_belarusian_training_data(
-    data_path: str | Path,
-    max_samples: int = 10000,
-    max_length: int = 512,
-) -> Dataset:
+def load_belarusian_training_data(data_path: str | Path, max_samples: int, max_length: int) -> Dataset:
     """Load Belarusian text data for training."""
     data_path = Path(data_path)
     texts = []
@@ -47,7 +40,8 @@ def load_belarusian_training_data(
 
     for text in corpus:
         if text.strip() and len(text) > 20:
-            if len(text) > max_length * 4:
+            # Truncate very long texts
+            if len(text) > max_length * 4:  # Rough estimate
                 text = text[: max_length * 4]
             texts.append(text)
 
@@ -58,208 +52,170 @@ def load_belarusian_training_data(
     return Dataset.from_dict({"text": texts})
 
 
-def prepare_dataset_for_training(
-    dataset: Dataset,
-    tokenizer: AutoTokenizer,
-    max_length: int = 512,
-) -> Dataset:
-    """Tokenize dataset for training."""
+def formatting_prompts_func(example):
+    conversations_list = example["conversations"]
 
-    def tokenize_function(examples):
-        formatted_texts = []
-        for text in examples["text"]:
-            messages = [
-                {"role": "user", "content": f"Працягні ці дапоўні тэкст: {text[:200]}..." if len(text) > 200 else text},
-                {"role": "assistant", "content": text},
-            ]
-            formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-            formatted_texts.append(formatted)
+    if conversations_list and isinstance(conversations_list[0], dict):
+        conversations_list = [conversations_list]
 
-        result = tokenizer(
-            formatted_texts,
-            truncation=True,
-            max_length=max_length,
-            padding=False,
-            return_attention_mask=False,
+    all_texts = []
+    for conversations in conversations_list:
+        texts = []
+        for conv in conversations:
+            if conv["from"] == "human":
+                texts.append(f"<|im_start|>user\n{conv['value']}<|im_end|>")
+            elif conv["from"] == "gpt":
+                texts.append(f"<|im_start|>assistant\n{conv['value']}<|im_end|>")
+        all_texts.append("".join(texts))
+
+    return all_texts
+
+
+def prepare_dataset_for_unsloth(dataset: Dataset, max_samples: int = 1000) -> Dataset:
+    conversations = []
+    for text in dataset["text"][:max_samples]:
+        if len(text) > 100:
+            split_point = min(200, len(text) // 2)
+            instruction = text[:split_point].strip()
+            response = text[split_point:].strip()
+        else:
+            instruction = "Працягні тэкст"
+            response = text.strip()
+
+        conversations.append(
+            {"conversations": [{"from": "human", "value": instruction}, {"from": "gpt", "value": response}]}
         )
 
-        return result
+    return Dataset.from_list(conversations)
 
-    logger.info("Tokenizing dataset...")
-    return dataset.map(
-        tokenize_function,
-        batched=True,
-        remove_columns=dataset.column_names,
-        desc="Tokenizing",
+
+def generate_response(model, tokenizer, prompt: str, temperature: float = 0.0, max_new_tokens: int = 512):
+    messages = [{"role": "user", "content": prompt}]
+    inputs = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+    ).to("cuda")
+    outputs = model.generate(
+        input_ids=inputs,
+        max_new_tokens=max_new_tokens,
+        use_cache=True,
+        temperature=temperature,
+        do_sample=True,
     )
 
-
-def create_trainer(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    train_dataset: Dataset,
-    output_dir: str,
-    per_device_batch_size: int = 2,
-    gradient_accumulation_steps: int = 8,
-    learning_rate: float = 5e-5,
-    num_train_epochs: int = 3,
-    max_length: int = 512,
-) -> Trainer:
-    """Create and configure Trainer."""
-
-    effective_batch_size = per_device_batch_size * gradient_accumulation_steps
-    total_steps = len(train_dataset) // effective_batch_size * num_train_epochs
-
-    logger.info(f"Training setup:")
-    logger.info(f"  Samples: {len(train_dataset)}")
-    logger.info(f"  Batch size: {per_device_batch_size}")
-    logger.info(f"  Gradient accumulation: {gradient_accumulation_steps}")
-    logger.info(f"  Effective batch size: {effective_batch_size}")
-    logger.info(f"  Epochs: {num_train_epochs}")
-    logger.info(f"  Total steps: {total_steps}")
-
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        overwrite_output_dir=True,
-        # Training parameters
-        num_train_epochs=num_train_epochs,
-        learning_rate=learning_rate,
-        per_device_train_batch_size=per_device_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        # Optimization
-        optim="adamw_torch",
-        warmup_steps=100,
-        weight_decay=0.01,
-        # Memory optimization
-        fp16=True,
-        dataloader_pin_memory=True,
-        dataloader_num_workers=2,
-        # Logging and saving
-        logging_steps=10,
-        save_steps=500,
-        save_total_limit=2,
-        # Evaluation
-        evaluation_strategy="no",
-        # Other
-        report_to=None,
-        remove_unused_columns=False,
-    )
-
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,  # We're doing causal language modeling
-    )
-
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        data_collator=data_collator,
-        tokenizer=tokenizer,
-    )
-
-    return trainer
+    return tokenizer.decode(outputs[0][len(inputs[0]) :], skip_special_tokens=True)
 
 
-def fine_tune_qwen_belarusian(args) -> None:
-    """Main fine-tuning pipeline."""
+def fine_tune_qwen(args) -> tuple[FastLanguageModel, AutoTokenizer]:
+    logger.info("Loading model and tokenizer...")
+    model, _ = FastLanguageModel.from_pretrained(args.base_model, args.max_length, None, load_in_4bit=True)
 
     logger.info(f"Loading Belarusian tokenizer: {args.tokenizer_path}")
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, trust_remote_code=True)
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    logger.info(f"Tokenizer vocab size: {len(tokenizer.get_vocab()):,}")
+    logger.info(f"Resizing model embeddings for Belarusian tokenizer to {len(tokenizer)}...")
+    model.resize_token_embeddings(len(tokenizer), mean_resizing=False)
 
-    logger.info(f"Loading base model: {args.base_model}")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.base_model,
-        torch_dtype=torch.float16,
-        device_map="auto",
-        trust_remote_code=True,
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        lora_alpha=32,
+        lora_dropout=0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=137,
+        use_rslora=False,
+        loftq_config=None,
     )
 
-    logger.info("Resizing model embeddings...")
-    model.resize_token_embeddings(len(tokenizer), mean_resizing=False)
-    logger.info(f"Model vocabulary resized to {len(tokenizer):,} tokens")
+    logger.info("Model prepared with LoRA adapters")
+
+    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
 
     logger.info(f"Loading training data from: {args.data_path}")
     raw_dataset = load_belarusian_training_data(args.data_path, args.max_samples, args.max_length)
+    train_dataset = prepare_dataset_for_unsloth(raw_dataset, args.max_samples)
 
-    train_dataset = prepare_dataset_for_training(raw_dataset, tokenizer, args.max_length)
-
-    trainer = create_trainer(
-        model,
-        tokenizer,
-        train_dataset,
-        args.output_dir,
-        per_device_batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        num_train_epochs=args.epochs,
-        max_length=args.max_length,
+    response_template = "\n<|im_start|>assistant\n"
+    trainer = sft_trainer.SFTTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        args=TrainingArguments(
+            per_device_train_batch_size=args.batch_size,
+            gradient_accumulation_steps=8,
+            warmup_steps=100,
+            num_train_epochs=args.epochs,
+            learning_rate=args.learning_rate,
+            bf16=True,
+            logging_steps=10,
+            optim="adamw_torch_4bit",
+            weight_decay=0.01,
+            lr_scheduler_type="linear",
+            seed=137,
+            output_dir=args.output_dir,
+            report_to=None,
+            save_steps=500,
+            save_total_limit=2,
+        ),
+        formatting_func=formatting_prompts_func,
+        data_collator=DataCollatorForLanguageModeling(
+            # response_template=response_template,
+            tokenizer=tokenizer,
+            mlm=False,
+        ),
     )
 
     logger.info("Starting fine-tuning...")
-    trainer.train()
+    trainer_stats = trainer.train()
+    logger.info(f"Training completed. Final loss: {trainer_stats.training_loss:.4f}")
 
-    logger.info(f"Saving fine-tuned model to: {args.output_dir}")
-    trainer.save_model(args.output_dir)
+    logger.info(f"Saving model to: {args.output_dir}")
+    model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
 
-    logger.info("Fine-tuning completed!")
-
     logger.info("\n=== Testing fine-tuned model ===")
+    FastLanguageModel.for_inference(model)  # Enable 2x faster inference
+    return model, tokenizer
+
+
+def run_test_prompts(model, tokenizer, args):
     test_prompts = [
         "Беларуская мова - гэта",
         "Мінск з'яўляецца",
         "Вясной у лесе",
     ]
 
-    model.eval()
     for prompt in test_prompts:
-        messages = [{"role": "user", "content": prompt}]
-        formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-        inputs = tokenizer(formatted, return_tensors="pt").to(model.device)
-
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=50,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-
-        response = tokenizer.decode(outputs[0][len(inputs.input_ids[0]) :], skip_special_tokens=True)
+        response = generate_response(model, tokenizer, prompt)
         logger.info(f"Prompt: {prompt}")
         logger.info(f"Generated: {response}\n")
 
+    logger.info("Fine-tuning completed successfully!")
+    logger.info(f"Model saved to: {args.output_dir}")
+    logger.info("Note: This is a LoRA adapter. Use FastLanguageModel.merge_and_save() for full model.")
+
 
 def main():
-    """Command line interface."""
-    import argparse
-
     parser = argparse.ArgumentParser(description="Fine-tune Qwen model with Belarusian tokenizer")
     parser.add_argument("--base-model", default="Qwen/Qwen2.5-1.5B-Instruct", help="Base model to fine-tune")
-    parser.add_argument(
-        "--tokenizer-path", default="./results/qwen2.5_7b_be_fixed_bytes", help="Path to Belarusian tokenizer"
-    )
-    parser.add_argument("--data-path", default="data/processed", help="Path to training data")
-    parser.add_argument(
-        "--output-dir", default="./results/qwen2.5_1.5b_be_finetuned", help="Output directory for fine-tuned model"
-    )
+    parser.add_argument("--tokenizer-path", default="./results/qwen2.5_7b_be_fixed_bytes", help="Path to Belarusian tokenizer")
+    parser.add_argument("--data-path", default="data/final", help="Path to training data")
+    parser.add_argument("--output-dir", default="./results/qwen2.5_1.5b_be", help="Output directory for fine-tuned model")
     parser.add_argument("--max-samples", type=int, default=10000, help="Maximum training samples")
-    parser.add_argument("--max-length", type=int, default=512, help="Maximum sequence length")
+    parser.add_argument("--max-length", type=int, default=1024, help="Maximum sequence length")
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=2, help="Per-device batch size")
     parser.add_argument("--learning-rate", type=float, default=5e-5, help="Learning rate")
-
     args = parser.parse_args()
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    fine_tune_qwen_belarusian(args)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    model, tokenizer = fine_tune_qwen(args)
+    run_test_prompts(model, tokenizer, args)
 
 
 if __name__ == "__main__":

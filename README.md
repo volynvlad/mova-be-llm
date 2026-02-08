@@ -69,6 +69,10 @@ sudo apt install libdjvulibre-dev pkg-config
 uv sync
 ```
 
+```sh
+uv run pip install torch --force-reinstall --index-url https://download.pytorch.org/whl/cu121
+```
+
 # How to get data?
 
 ## Scrape data
@@ -131,7 +135,9 @@ uv run python mova_be_llm/train_belarusian_tokenizer.py \
 # Model Training and Usage
 
 ## Fine-tune Qwen with Belarusian tokenizer
-Fine-tune a Qwen model using the Belarusian-enhanced tokenizer:
+
+### Method 1: Standard fine-tuning
+Fine-tune a Qwen model using Belarusian-enhanced tokenizer:
 
 ```sh
 # Quick test with small dataset
@@ -148,6 +154,32 @@ uv run python -m mova_be_llm.fine_tune_belarusian_qwen \
   --batch-size 2 \
   --learning-rate 5e-5
 ```
+
+### Method 2: Unsloth-optimized fine-tuning (Recommended)
+Use Unsloth for 2x faster training and 80% memory reduction:
+
+```sh
+# Quick test with Unsloth
+uv run python -m mova_be_llm.fine_tune_belarusian_qwen --max-samples 1000 --epochs 1
+
+# Full training with Unsloth optimizations
+uv run python -m mova_be_llm.fine_tune_belarusian_qwen \
+  --base-model Qwen/Qwen2.5-1.5B-Instruct \
+  --tokenizer-path ./results/qwen2.5_7b_be_fixed_bytes \
+  --data-path data/processed \
+  --output-dir ./results/qwen2.5_1.5b_be_unsloth \
+  --max-samples 10000 \
+  --epochs 3 \
+  --batch-size 4 \
+  --learning-rate 2e-4
+```
+
+**Unsloth Benefits:**
+- 2x faster training speed
+- 80% less memory usage
+- 4-bit quantization support
+- Optimized LoRA training
+- Automatic gradient checkpointing
 
 ## Use Belarusian-enhanced tokenizer
 Example showing how to use the merged tokenizer with Qwen models:
