@@ -113,6 +113,40 @@ uv run python mova_be_llm/clean_txt.py
 
 ```
 
+## Create training datasets
+
+Generate instruction-response datasets from the book corpus in `data/interim/`:
+
+### Step 1: Generate individual datasets
+
+```sh
+# Text continuation pairs (prefix → continuation)
+uv run python -m mova_be_llm.create_continuation_dataset \
+  --max-samples 50000 --seed 42
+
+# Grammar correction, cloze fill-in-the-blank, spelling
+uv run python -m mova_be_llm.create_grammar_dataset \
+  --max-samples 30000 --error-rate 0.15 --seed 42
+
+# QA: topic questions, factual extraction, true/false
+uv run python -m mova_be_llm.create_qa_dataset \
+  --max-samples 20000 --seed 42
+```
+
+### Step 2: Combine into final train/validation split
+
+```sh
+uv run python -m mova_be_llm.build_training_dataset \
+  --input-files \
+    data/processed/continuation_dataset.jsonl \
+    data/processed/grammar_dataset.jsonl \
+    data/processed/qa_dataset.jsonl \
+  --val-split 0.05 --seed 42
+```
+
+This produces `data/processed/training_dataset.jsonl` and `data/processed/validation_dataset.jsonl`,
+directly loadable by the fine-tuning pipeline.
+
 # Train Tokenizer
 
 ## Train standalone tokenizer
