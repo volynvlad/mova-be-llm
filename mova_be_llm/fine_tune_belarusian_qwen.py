@@ -8,6 +8,7 @@ tokenizer, providing significantly faster training and lower memory usage.
 
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template
+import json
 import sys
 from trl.trainer import sft_trainer
 import argparse
@@ -71,6 +72,23 @@ def formatting_prompts_func(example):
     return all_texts
 
 
+def load_conversations_jsonl(path: str | Path, max_samples: int) -> Dataset:
+    """Load a JSONL file that already contains conversations format."""
+    records = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if "conversations" in record:
+                records.append(record)
+            if len(records) >= max_samples:
+                break
+    logger.info(f"Loaded {len(records)} conversation records from {path}")
+    return Dataset.from_list(records)
+
+
 def prepare_dataset_for_unsloth(dataset: Dataset, max_samples: int = 1000) -> Dataset:
     conversations = []
     for text in dataset["text"][:max_samples]:
@@ -97,13 +115,17 @@ def generate_response(model, tokenizer, prompt: str, temperature: float = 0.0, m
         add_generation_prompt=True,
         return_tensors="pt",
     ).to("cuda")
-    outputs = model.generate(
-        input_ids=inputs,
-        max_new_tokens=max_new_tokens,
-        use_cache=True,
-        temperature=temperature,
-        do_sample=True,
-    )
+    gen_kwargs = {
+        "input_ids": inputs,
+        "max_new_tokens": max_new_tokens,
+        "use_cache": True,
+    }
+    if temperature > 0:
+        gen_kwargs["temperature"] = temperature
+        gen_kwargs["do_sample"] = True
+    else:
+        gen_kwargs["do_sample"] = False
+    outputs = model.generate(**gen_kwargs)
 
     return tokenizer.decode(outputs[0][len(inputs[0]) :], skip_special_tokens=True)
 
@@ -118,12 +140,13 @@ def fine_tune_qwen(args) -> tuple[FastLanguageModel, AutoTokenizer]:
         tokenizer.pad_token = tokenizer.eos_token
 
     logger.info(f"Resizing model embeddings for Belarusian tokenizer to {len(tokenizer)}...")
-    model.resize_token_embeddings(len(tokenizer), mean_resizing=False)
+    model.resize_token_embeddings(len(tokenizer), mean_resizing=True)
 
     model = FastLanguageModel.get_peft_model(
         model,
         r=16,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        modules_to_save=["embed_tokens", "lm_head"],
         lora_alpha=32,
         lora_dropout=0,
         bias="none",
@@ -138,8 +161,20 @@ def fine_tune_qwen(args) -> tuple[FastLanguageModel, AutoTokenizer]:
     tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
 
     logger.info(f"Loading training data from: {args.data_path}")
-    raw_dataset = load_belarusian_training_data(args.data_path, args.max_samples, args.max_length)
-    train_dataset = prepare_dataset_for_unsloth(raw_dataset, args.max_samples)
+    data_path = Path(args.data_path)
+    if data_path.suffix == ".jsonl":
+        # Check if it's a conversations-format JSONL
+        with open(data_path, "r", encoding="utf-8") as f:
+            first_line = json.loads(f.readline())
+        if "conversations" in first_line:
+            logger.info("Detected conversations JSONL format, loading directly")
+            train_dataset = load_conversations_jsonl(data_path, args.max_samples)
+        else:
+            raw_dataset = load_belarusian_training_data(args.data_path, args.max_samples, args.max_length)
+            train_dataset = prepare_dataset_for_unsloth(raw_dataset, args.max_samples)
+    else:
+        raw_dataset = load_belarusian_training_data(args.data_path, args.max_samples, args.max_length)
+        train_dataset = prepare_dataset_for_unsloth(raw_dataset, args.max_samples)
 
     response_template = "\n<|im_start|>assistant\n"
     trainer = sft_trainer.SFTTrainer(
@@ -204,7 +239,7 @@ def main():
     parser = argparse.ArgumentParser(description="Fine-tune Qwen model with Belarusian tokenizer")
     parser.add_argument("--base-model", default="Qwen/Qwen2.5-1.5B-Instruct", help="Base model to fine-tune")
     parser.add_argument("--tokenizer-path", default="./results/qwen2.5_7b_be_fixed_bytes", help="Path to Belarusian tokenizer")
-    parser.add_argument("--data-path", default="data/final", help="Path to training data")
+    parser.add_argument("--data-path", default="data/processed/training_dataset.jsonl", help="Path to training data (JSONL with conversations or directory)")
     parser.add_argument("--output-dir", default="./results/qwen2.5_1.5b_be", help="Output directory for fine-tuned model")
     parser.add_argument("--max-samples", type=int, default=10000, help="Maximum training samples")
     parser.add_argument("--max-length", type=int, default=1024, help="Maximum sequence length")

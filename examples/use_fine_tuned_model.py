@@ -85,7 +85,7 @@ def main():
     parser = argparse.ArgumentParser(description="Load and test a fine-tuned Belarusian Qwen model")
     parser.add_argument(
         "--model-path",
-        default="./results/qwen2.5_1.5b_be",
+        default="./results/qwen2.5_1.5b_be_finetuned_v2",
         help="Path to the fine-tuned model directory (LoRA adapter)",
     )
     parser.add_argument("--max-length", type=int, default=1024, help="Maximum sequence length")

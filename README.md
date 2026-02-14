@@ -227,3 +227,29 @@ This script demonstrates:
 - Text generation using the fine-tuned model
 - Performance analysis showing 30-48% token reduction for Belarusian text
 
+## Inspect training datasets
+
+```sh
+uv run python examples/inspect_dataset.py --samples 5
+```
+
+Shows sample entries and statistics from each dataset type (continuation, grammar, QA) and the combined train/validation split.
+
+## Test fine-tuned model on Belarusian tasks
+
+```sh
+uv run python examples/test_belarusian_tasks.py --model-path ./results/qwen2.5_1.5b_be
+```
+
+Runs the fine-tuned model through the same task categories used during training: text continuation, grammar correction, and QA/comprehension.
+
+## Evaluate model on validation set
+
+```sh
+uv run python examples/evaluate_on_validation.py \
+  --model-path ./results/qwen2.5_1.5b_be \
+  --num-samples 10
+```
+
+Loads random samples from the validation dataset and compares generated responses to reference answers for qualitative assessment.
+
