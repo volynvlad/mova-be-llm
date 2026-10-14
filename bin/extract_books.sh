@@ -1,14 +1,9 @@
 #!/bin/sh
 
-for dir in ./data/raw/*/; do
-  echo "Entering directory: $dir"
+find ./data/raw -type f -name "*.zip" | while read -r zipfile; do
+  echo "Unzipping: $zipfile"
   
-  for zipfile in "$dir"/*; do
-    if [[ -f "$zipfile" && "$zipfile" == *.zip ]]; then
-      echo "Unzipping: $zipfile"
-      file="${zipfile%.zip}"
-      unzip "$zipfile" -d "$file"
-    fi
-  done
+  outdir="${zipfile%.zip}"
+  
+  unzip -o "$zipfile" -d "$outdir"
 done
-

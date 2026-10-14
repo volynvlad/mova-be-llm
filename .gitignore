@@ -1,5 +1,10 @@
+_unsloth_temporary_saved_buffers/
+unsloth_compiled_cache/
+results/
 # Data
 /data/
+# Models
+models/
 
 # Mac OS-specific storage files
 .DS_Store

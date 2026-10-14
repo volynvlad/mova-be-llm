@@ -1,29 +1,39 @@
-from ebooklib import epub
+from bs4 import BeautifulSoup
+from ebooklib import epub, ITEM_DOCUMENT
 from PyPDF2 import PdfReader
-import djvu
+
 
 def read_pdf(path: str):
+    print("\t\t=== Reading pdf book ===")
     reader = PdfReader(path)
-    for page in reader.pages:
+    for i, page in enumerate(reader.pages):
         print(page.extract_text())
+        if i > 5:
+            break
 
-def read_epub(path: str):
-    book = epub.read_epub(path)
+
+def read_epub(file_path):
+    print("\t\t=== Reading epub book ===")
+    book = epub.read_epub(file_path)
     for item in book.get_items():
-        if item.get_type() == epub.ITEM_DOCUMENT:
-            print(item.get_content().decode('utf-8'))
+        if item.get_type() == ITEM_DOCUMENT:
+            soup = BeautifulSoup(item.get_content(), 'html.parser')
+            text = soup.get_text()
+            print(text)
 
-def read_djvu(path: str):
-    context = djvu.Context()
-    document = context.new_document(djvu.decode_file(path))
-    text = document.get_page_text(0)  # Page number
-    print(text)
+
+def read_book(path: str):
+    if path.endswith(".pdf"):
+        read_pdf(path)
+    elif path.endswith(".epub"):
+        read_epub(path)
+    else:
+        raise ValueError(f"Doesn't support given format: {path}")
 
 
 def main():
-    read_pdf("../data/raw/knihi_books/Latina-BY.pdf")
-    read_epub("../data/raw/knihi_books/Mova.epub")
-    read_djvu("../data/raw/knihi_books/Katechizis.djvu")
+    read_book("data/raw/knihi_books/Latina-BY.pdf")
+    read_book("data/raw/knihi_books/Mova.epub")
 
 
 if __name__ == "__main__":
